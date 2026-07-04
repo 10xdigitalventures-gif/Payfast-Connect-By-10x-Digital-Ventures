@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const locationId = searchParams.get('locationId');
 
-  if (!locationId) return NextResponse.json({ error: 'locationId required' }, { status: 400 });
+  if (!locationId || locationId.includes('{')) return NextResponse.json({ installed: false });
 
   const rows = await query<any[]>(
     `SELECT merchant_id, merchant_name, store_id, merchant_key, passphrase, environment,
@@ -70,9 +70,13 @@ export async function POST(request: NextRequest) {
     route_subscription,
   } = body;
 
-  if (!locationId)   return NextResponse.json({ error: 'locationId required' }, { status: 400 });
+  if (!locationId || locationId.includes('{')) {
+    return NextResponse.json(
+      { error: 'A valid HighLevel location is required. Please open this page from Payments → Integrations inside HighLevel.' },
+      { status: 400 }
+    );
+  }
   if (!merchant_id)  return NextResponse.json({ error: 'merchant_id required' }, { status: 400 });
-  if (!store_id)     return NextResponse.json({ error: 'store_id required' }, { status: 400 });
   if (!merchant_key) return NextResponse.json({ error: 'merchant_key required' }, { status: 400 });
 
   // Whop requires its credentials only when it is enabled.
@@ -83,6 +87,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  try {
   const mode: 'live' | 'test' = environment === 'sandbox' || environment === 'test' ? 'test' : 'live';
   const rate = Number(whop_exchange_rate);
   const fee = Number(whop_fee_percent);
@@ -90,7 +95,7 @@ export async function POST(request: NextRequest) {
   const managedValues = [
     merchant_id,
     merchant_name || null,
-    store_id,
+    store_id || null,
     merchant_key,
     passphrase || null,
     environment || 'live',
@@ -154,4 +159,11 @@ export async function POST(request: NextRequest) {
     mode,
     details: { register: reg, connect: { ok: connect.ok }, capabilities: caps },
   });
+  } catch (err) {
+    console.error('[GHL Config] save failed', err);
+    return NextResponse.json(
+      { success: false, error: 'Something went wrong while saving. Please try again.' },
+      { status: 500 }
+    );
+  }
 }

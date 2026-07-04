@@ -221,6 +221,12 @@ export async function ensureCustomProviderProvisioned(
   const reg = await registerProviderForLocation(locationId, appType);
   steps.push({ step: 'register', ok: !!reg.ok, error: (reg as any).error });
 
+  // Connect the provider config so HighLevel marks it as CONNECTED and shows
+  // the Connect / Manage / Set-as-Default option in Payments -> Integrations.
+  // Uses auto-generated sk_/pk_ keys; a single call configures both live+test.
+  const connect = await connectProviderConfig(locationId, 'live', appType);
+  steps.push({ step: 'connect', ok: !!connect.ok, error: (connect as any).error });
+
   const caps = await updateProviderCapabilities(locationId, appType);
   steps.push({ step: 'capabilities', ok: !!caps.ok, error: (caps as any).error });
 

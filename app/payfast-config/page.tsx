@@ -58,7 +58,8 @@ export default function PayfastConfigPage() {
     if (typeof window !== 'undefined') {
       const qp = new URLSearchParams(window.location.search);
       const qLoc = qp.get('locationId');
-      if (qLoc) {
+      // Ignore unsubstituted GHL merge-field placeholders in the URL; fall back to SSO handshake.
+      if (qLoc && !qLoc.includes('{') && !qLoc.includes('}')) {
         resolved = true;
         setLocationId(qLoc);
         loadConfig(qLoc);
@@ -240,6 +241,13 @@ export default function PayfastConfigPage() {
             </div>
             <div style={field}>
               <label style={label}>Webhook Secret</label>
+              <div style={hint}>
+                <strong>Step 1:</strong> In Whop, open Developer &rarr; Webhooks and create a new webhook using the URL below.<br />
+                <strong>Step 2:</strong> Copy the signing secret Whop gives you and paste it into this field.
+              </div>
+              <div style={codeBox}>
+                <span style={codeText}>{appUrl}/api/whop/webhook</span>
+              </div>
               <input style={input} value={cfg.whop_webhook_secret} onChange={e => set('whop_webhook_secret', e.target.value)} placeholder="whsec_xxxxxxxx" />
             </div>
 
@@ -291,12 +299,6 @@ export default function PayfastConfigPage() {
               <div style={hint}>Checkout automatically uses the selected provider for each payment type.</div>
             </div>
 
-            <div style={field}>
-              <label style={label}>Whop webhook URL (paste into your Whop dashboard)</label>
-              <div style={codeBox}>
-                <span style={codeText}>{appUrl}/api/whop/webhook</span>
-              </div>
-            </div>
           </div>
         ) : null}
 
