@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query, Installation } from '@/lib/db';
 import { generateToken } from '@/lib/tokens';
-import { convertPkrToUsd, calculateFeePkr, createWhopCheckout, resolveExchangeRate } from '@/lib/whop';
+import { convertPkrToUsd, calculateFeePkr, createWhopCheckout, resolveExchangeRate, billingPeriodDaysForFrequency } from '@/lib/whop';
 
 // Whop counterpart of /api/ghl/pay.
 // Creates a Whop hosted checkout and a pending payment row that the checkout
@@ -42,11 +42,36 @@ export async function POST(request: NextRequest) {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL!;
 
   const pkrTotal = parseFloat(amount);
-  const feePercent = Number(inst.whop_fee_percent ?? 0);
+  const feePercent = Number(inst.whop_fee_percent ?? 10);
   const fixedRate = Number(inst.whop_exchange_rate ?? 280);
-  const { rate, source: rateSource } = await resolveExchangeRate(inst.whop_rate_mode, fixedRate);
-  const usdAmount = convertPkrToUsd(pkrTotal, feePercent, rate);
+
+  // Currency handling (configurable): when the GHL product is already priced
+  // in USD we charge that amount plus the gateway fee directly; otherwise we
+  // convert PKR→USD using the configured (or live) exchange rate. The stored
+  // whop_currency default only applies when GHL doesn't send a currency.
+  const productCurrency = String(body.currency || (inst as any).whop_currency || 'PKR').toUpperCase();
+  const isUsdProduct = productCurrency === 'USD';
+
+  let rate = 1;
+  let rateSource: 'live' | 'fixed' = 'fixed';
+  let usdAmount: number;
+  if (isUsdProduct) {
+    // Already USD — apply only the gateway fee (exchange rate of 1).
+    usdAmount = convertPkrToUsd(pkrTotal, feePercent, 1);
+  } else {
+    const resolved = await resolveExchangeRate(inst.whop_rate_mode, fixedRate);
+    rate = resolved.rate;
+    rateSource = resolved.source;
+    usdAmount = convertPkrToUsd(pkrTotal, feePercent, rate);
+  }
   const feePkr = calculateFeePkr(pkrTotal, feePercent);
+
+  // Subscription vs one-time. Subscriptions become Whop renewal plans so Whop
+  // runs the recurring billing and emits a payment.succeeded webhook per cycle.
+  const frequency = String(body.frequency || body.interval || body.billingCycle || '');
+  const isSubscription = !!subscriptionId;
+  const planType: 'one_time' | 'renewal' = isSubscription ? 'renewal' : 'one_time';
+  const billingPeriodDays = isSubscription ? billingPeriodDaysForFrequency(frequency) : null;
 
   const payToken = generateToken(16);
   const basketId = `WHOP-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -73,6 +98,10 @@ export async function POST(request: NextRequest) {
         rate,
         rateMode: rateSource,
         feePercent,
+        productCurrency,
+        planType,
+        billingPeriodDays,
+        frequency: frequency || null,
       }),
       subscriptionId ? 'subscription' : 'one-time',
       'whop',
@@ -92,6 +121,8 @@ export async function POST(request: NextRequest) {
       feePercent,
     },
     usdAmount,
+    planType,
+    billingPeriodDays,
     metadata: {
       basketId,
       woo_order_id: basketId, // back-compat key name from the WooCommerce plugin
@@ -100,6 +131,8 @@ export async function POST(request: NextRequest) {
       customer_email: email,
       pkr_total: String(pkrTotal),
       usd_charged: String(usdAmount),
+      plan_type: planType,
+      billing_period_days: billingPeriodDays != null ? String(billingPeriodDays) : '',
       app_url: appUrl,
     },
   });

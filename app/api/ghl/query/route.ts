@@ -160,18 +160,72 @@ export async function POST(request: NextRequest) {
         const ok = await gha.validateProviderApiKey(locationId, request, 'refund', body);
         if (!ok) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
       }
+      // Determine which provider owns this charge so we route the refund correctly.
+      const refundRows = await query<any[]>(
+        `SELECT * FROM payments
+           WHERE (pf_payment_id = ? OR pf_token = ? OR custom_str3 = ?) AND location_id = ?
+           ORDER BY id DESC LIMIT 1`,
+        [chargeId, chargeId, ghlTransactionId, locationId]
+      );
+      const refundPayment = refundRows[0] || null;
+      const refundProvider = refundPayment?.provider || 'payfast';
+
+      if (refundProvider === 'whop') {
+        // Real Whop refund via POST /payments/{id}/refund.
+        const whopInstRows = await query<any[]>(
+          `SELECT * FROM installations WHERE location_id = ? LIMIT 1`,
+          [locationId]
+        );
+        const whopApiKey = whopInstRows[0]?.whop_api_key || '';
+        const whopPaymentId = refundPayment?.pf_payment_id || chargeId;
+
+        if (!whopApiKey || !whopPaymentId) {
+          return NextResponse.json({
+            success: false,
+            failed: true,
+            message: 'This payment was collected through Whop, but the Whop API key or payment id is missing. Please refund it from your Whop dashboard (Payments \u2192 Refund).',
+          });
+        }
+
+        const { refundWhopPayment } = await import('@/lib/whop');
+        const partial = amount != null && Number(amount) > 0 ? Number(amount) : undefined;
+        const refundRes = await refundWhopPayment({ apiKey: whopApiKey, paymentId: whopPaymentId, partialAmount: partial });
+
+        if (!refundRes.ok) {
+          return NextResponse.json({
+            success: false,
+            failed: true,
+            message: refundRes.error || 'Whop refund failed. You can also refund it from your Whop dashboard.',
+          }, { status: 400 });
+        }
+
+        await query(
+          `UPDATE payments SET status = 'refunded' WHERE (pf_payment_id = ? OR pf_token = ?) AND location_id = ?`,
+          [whopPaymentId, refundPayment?.pf_token || chargeId, locationId]
+        );
+
+        return NextResponse.json({
+          success: true,
+          message: 'Refund successful',
+          id: whopPaymentId,
+          amount: Number(amount),
+          currency: 'USD',
+        });
+      }
+
+      // PayFast (default): mark the payment refunded in our records.
       await query(
-        `UPDATE payments SET status = 'refunded' WHERE pf_payment_id = ? AND location_id = ?`,
-        [chargeId, locationId]
+        `UPDATE payments SET status = 'refunded' WHERE (pf_payment_id = ? OR pf_token = ?) AND location_id = ?`,
+        [chargeId, chargeId, locationId]
       );
 
       return NextResponse.json({
-  success: true,
-  message: 'Refund successful',
-  id: chargeId,
-  amount: Number(amount),
-  currency: 'USD',
-});
+        success: true,
+        message: 'Refund successful',
+        id: chargeId,
+        amount: Number(amount),
+        currency: 'USD',
+      });
     }
 
     // ── List Payment Methods (for saved cards) ─────────────
@@ -381,17 +435,25 @@ export async function POST(request: NextRequest) {
         [locationId, nextBilling, selectedMethod.instrument_token, Number(amount)]
       );
 
+      const createdSubSnapshot = {
+        id: subscriptionId || selectedMethod.instrument_token,
+        status: 'active',
+        createdAt: Math.floor(Date.now() / 1000),
+        trialEnd: 0,
+        nextCharge: toEpoch(nextBilling),
+        label: subscriptionLabel,
+      };
       return NextResponse.json({
         success: true,
+        failed: false,
         message: 'Subscription created',
-        subscriptionSnapshot: {
-          id: subscriptionId || selectedMethod.instrument_token,
-          status: 'active',
-          createdAt: Math.floor(Date.now() / 1000),
-          trialEnd: 0,
-          nextCharge: toEpoch(nextBilling),
-          label: subscriptionLabel,
+        // Nested shape expected by HighLevel (Create Subscription spec 9.4.2)
+        subscription: {
+          subscriptionId: subscriptionId || selectedMethod.instrument_token,
+          subscriptionSnapshot: createdSubSnapshot,
         },
+        // Top-level kept for backward compatibility
+        subscriptionSnapshot: createdSubSnapshot,
       });
     }
 
@@ -404,6 +466,59 @@ export async function POST(request: NextRequest) {
       }
       if (!locationId) {
         return NextResponse.json({ error: 'locationId required' }, { status: 400 });
+      }
+
+      // ── Whop subscription cancellation (provider-aware) ──
+      // Whop runs the recurring billing, so cancelling means cancelling the
+      // Whop membership captured on the subscription payment row.
+      const whopSubRows = await query<any[]>(
+        `SELECT * FROM payments
+           WHERE location_id = ? AND provider = 'whop' AND payment_type = 'subscription'
+             AND whop_membership_id IS NOT NULL
+             AND (custom_str3 = ? OR pf_token = ? OR whop_membership_id = ? OR ? = '')
+           ORDER BY id DESC LIMIT 1`,
+        [locationId, subscriptionId || '', subscriptionId || '', subscriptionId || '', subscriptionId || '']
+      );
+      const whopSub = whopSubRows[0] || null;
+      if (whopSub?.whop_membership_id) {
+        const whopInstRows = await query<any[]>(
+          `SELECT * FROM installations WHERE location_id = ? LIMIT 1`,
+          [locationId]
+        );
+        const whopApiKey = whopInstRows[0]?.whop_api_key || '';
+        const { cancelWhopMembership } = await import('@/lib/whop');
+        const cancelRes = await cancelWhopMembership({
+          apiKey: whopApiKey,
+          membershipId: whopSub.whop_membership_id,
+          atPeriodEnd: false,
+        });
+
+        if (!cancelRes.ok) {
+          return NextResponse.json({
+            success: false,
+            failed: true,
+            message: cancelRes.error || 'Whop subscription could not be cancelled. You can also cancel it from your Whop dashboard.',
+          }, { status: 400 });
+        }
+
+        await query(`UPDATE payments SET status = 'cancelled' WHERE id = ?`, [whopSub.id]);
+
+        return NextResponse.json({
+          // Top-level status expected by HighLevel (Cancel Subscription spec 9.4.3)
+          status: 'canceled',
+          success: true,
+          message: 'Subscription cancelled',
+          subscription: {
+            subscriptionId: subscriptionId || whopSub.whop_membership_id,
+            subscriptionSnapshot: {
+              id: subscriptionId || whopSub.whop_membership_id,
+              status: 'canceled',
+              createdAt: toEpoch(whopSub.created_at),
+              trialEnd: 0,
+              nextCharge: 0,
+            },
+          },
+        });
       }
 
       const targetRows = subscriptionId
@@ -433,14 +548,19 @@ export async function POST(request: NextRequest) {
       );
 
       return NextResponse.json({
+        // Top-level status expected by HighLevel (Cancel Subscription spec 9.4.3)
+        status: 'canceled',
         success: true,
         message: 'Subscription cancelled',
-        subscriptionSnapshot: {
-          id: target.id || subscriptionId || null,
-          status: 'cancelled',
-          createdAt: toEpoch(target?.created_at),
-          trialEnd: 0,
-          nextCharge: 0,
+        subscription: {
+          subscriptionId: target.id || subscriptionId || null,
+          subscriptionSnapshot: {
+            id: target.id || subscriptionId || null,
+            status: 'canceled',
+            createdAt: toEpoch(target?.created_at),
+            trialEnd: 0,
+            nextCharge: 0,
+          },
         },
       });
     }

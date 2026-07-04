@@ -79,6 +79,7 @@ export default function CheckoutPage() {
   const [statusMsg,      setStatusMsg]      = useState('');
   const [providers,      setProviders]      = useState<{ payfast: boolean; whop: boolean }>({ payfast: true, whop: false });
   const [method,         setMethod]         = useState<'payfast' | 'whop'>('payfast');
+  const [routing,        setRouting]        = useState<{ oneoff: 'payfast' | 'whop'; subscription: 'payfast' | 'whop' }>({ oneoff: 'payfast', subscription: 'whop' });
 
   const payDataRef  = useRef<GHLPaymentData | null>(null);
   const popupRef    = useRef<Window | null>(null);
@@ -222,7 +223,25 @@ export default function CheckoutPage() {
         if (cancelled || !d) return;
         const next = { payfast: d.payfast !== false, whop: !!d.whop };
         setProviders(next);
-        setMethod(next.payfast ? 'payfast' : (next.whop ? 'whop' : 'payfast'));
+
+        // Admin routing: pick the provider configured for this payment type
+        // (one-time → route_oneoff, subscription → route_subscription).
+        const route = d.routing || { oneoff: 'payfast', subscription: 'whop' };
+        setRouting({
+          oneoff:       route.oneoff === 'whop' ? 'whop' : 'payfast',
+          subscription: route.subscription === 'payfast' ? 'payfast' : 'whop',
+        });
+        const isSub = !!payDataRef.current?.subscriptionId;
+        const preferred: 'payfast' | 'whop' = isSub
+          ? (route.subscription === 'payfast' ? 'payfast' : 'whop')
+          : (route.oneoff === 'whop' ? 'whop' : 'payfast');
+        // Honour the routing choice when that provider is configured; otherwise
+        // fall back to whichever provider is available.
+        const chosen: 'payfast' | 'whop' =
+          preferred === 'whop'
+            ? (next.whop ? 'whop' : (next.payfast ? 'payfast' : 'whop'))
+            : (next.payfast ? 'payfast' : (next.whop ? 'whop' : 'payfast'));
+        setMethod(chosen);
       })
       .catch(() => { /* keep defaults */ });
     return () => { cancelled = true; };
@@ -293,6 +312,7 @@ export default function CheckoutPage() {
             invoiceId:        payData.invoiceId,
             orderId:          payData.orderId,
             subscriptionId:   payData.subscriptionId,
+            frequency:        (payData as any).recurring?.interval || (payData as any).frequency || '',
             amount:           payData.amount,
             currency:         payData.currency,
             description:      payData.description || 'Payment',

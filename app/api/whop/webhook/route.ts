@@ -47,8 +47,33 @@ export async function POST(request: NextRequest) {
     return new NextResponse('Invalid signature', { status: 401 });
   }
 
-  // Only act on successful payments.
   const eventType = String(data?.type || data?.action || '');
+
+  // Handle failed payments: mark the pending row failed so the checkout poller
+  // and the CRM see the decline instead of waiting for a timeout.
+  if (eventType === 'payment.failed' || eventType === 'payment_failed') {
+    await query(
+      `UPDATE payments SET status = 'failed', raw_itn = ?, updated_at = NOW()
+         WHERE pf_token = ? AND location_id = ? AND status = 'pending'`,
+      [JSON.stringify(data), basketId, locationId]
+    );
+    return new NextResponse('OK', { status: 200 });
+  }
+
+  // Best-effort: reflect Whop-side refunds back into our records.
+  if (eventType === 'refund.created' || eventType === 'refund_created') {
+    const refundedWhopId = data?.data?.payment?.id || data?.data?.payment_id || data?.data?.id || '';
+    if (refundedWhopId) {
+      await query(
+        `UPDATE payments SET status = 'refunded', updated_at = NOW()
+           WHERE pf_payment_id = ? AND location_id = ?`,
+        [String(refundedWhopId), locationId]
+      );
+    }
+    return new NextResponse('OK', { status: 200 });
+  }
+
+  // Only act on successful payments beyond this point.
   const isSuccess = eventType === 'payment.succeeded' || eventType === 'payment_succeeded';
   if (!isSuccess) {
     return new NextResponse('Ignored', { status: 200 });
@@ -67,6 +92,8 @@ export async function POST(request: NextRequest) {
   }
 
   const whopPaymentId = data?.data?.id ? String(data.data.id) : basketId;
+  // Capture the membership id for subscriptions so we can cancel it later.
+  const whopMembershipId = data?.data?.membership?.id ? String(data.data.membership.id) : null;
 
   let metadata: any = null;
   try {
@@ -76,8 +103,8 @@ export async function POST(request: NextRequest) {
   }
 
   await query(
-    `UPDATE payments SET pf_payment_id = ?, status = 'complete', raw_itn = ?, updated_at = NOW() WHERE id = ?`,
-    [whopPaymentId, JSON.stringify(data), payment.id]
+    `UPDATE payments SET pf_payment_id = ?, status = 'complete', whop_membership_id = COALESCE(?, whop_membership_id), raw_itn = ?, updated_at = NOW() WHERE id = ?`,
+    [whopPaymentId, whopMembershipId, JSON.stringify(data), payment.id]
   );
 
   // ─── Notify the CRM (identical contract to the PayFast flow) ────────

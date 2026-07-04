@@ -11,7 +11,8 @@ export async function GET(request: NextRequest) {
 
   const rows = await query<any[]>(
     `SELECT merchant_id, merchant_key,
-            whop_enabled, whop_api_key, whop_company_id
+            whop_enabled, whop_api_key, whop_company_id,
+            route_oneoff, route_subscription
        FROM installations WHERE location_id = ? LIMIT 1`,
     [locationId]
   );
@@ -24,8 +25,16 @@ export async function GET(request: NextRequest) {
   const payfast = !!(r.merchant_id && r.merchant_key);
   const whop = !!(r.whop_enabled && r.whop_api_key && r.whop_company_id);
 
+  // Admin routing preferences: which provider handles each payment type.
+  const routeOneoff = r.route_oneoff === 'whop' ? 'whop' : 'payfast';
+  const routeSubscription = r.route_subscription === 'payfast' ? 'payfast' : 'whop';
+
   return NextResponse.json(
-    { payfast, whop },
+    {
+      payfast,
+      whop,
+      routing: { oneoff: routeOneoff, subscription: routeSubscription },
+    },
     { headers: { 'Cache-Control': 'no-store' } }
   );
 }

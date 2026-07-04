@@ -37,13 +37,27 @@ export async function POST(request: NextRequest) {
 
   const now = Math.floor(Date.now() / 1000);
 
+  // Resolve the owning provider so the CRM order shows the correct method label.
+  let paymentMethodLabel = 'PayFast';
+  try {
+    const provRows = await query<any[]>(
+      `SELECT provider FROM payments
+         WHERE (pf_payment_id = ? OR pf_token = ? OR custom_str3 = ?) AND location_id = ?
+         ORDER BY id DESC LIMIT 1`,
+      [chargeId, chargeId, ghlTransactionId, locationId]
+    );
+    if (provRows.length && provRows[0].provider === 'whop') paymentMethodLabel = 'Whop';
+  } catch (err) {
+    console.warn('[CRM Notify] provider lookup failed, defaulting to PayFast', err);
+  }
+
   // 1. Record Order Payment if orderId is provided
   if (orderId) {
     try {
       await recordOrderPayment(locationId, orderId, {
         amount: parseFloat(amount),
         transactionId: chargeId,
-        paymentMethod: 'Payfast',
+        paymentMethod: paymentMethodLabel,
       });
     } catch (err) {
       console.warn('[CRM Notify] Order payment recording failed', err);

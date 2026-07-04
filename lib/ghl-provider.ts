@@ -84,10 +84,13 @@ export async function registerProviderForLocation(
   const token = await getValidToken(locationId);
   if (!token) return { ok: false, reason: 'missing_token' as const };
 
-  // Per the official SDK (Models.CreateCustomProvidersDto):
+  // Per the official docs (Create Public Provider Config) + SDK
+  // (Models.CreateCustomProvidersDto): locationId is sent both in the body
+  // (per docs) and the query string (per SDK) for maximum compatibility.
   const body = {
     name: PROVIDER_NAME,
     description: PROVIDER_DESCRIPTION,
+    locationId,
     paymentsUrl: appUrl('/checkout'),
     queryUrl: appUrl('/api/ghl/query'),
     imageUrl: process.env.GHL_PROVIDER_LOGO_URL || appUrl('/logo.png'),

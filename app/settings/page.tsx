@@ -21,12 +21,15 @@ interface Settings {
   whop_exchange_rate?: string;
   whop_fee_percent?:   string;
   whop_rate_mode?:     string;
+  whop_currency?:      string;
+  route_oneoff?:       string;
+  route_subscription?: string;
   login_username?:     string;
   login_password?:     string;
 }
 
 export default function SettingsPage() {
-  const [cfg,     setCfg]     = useState<Settings>({ merchant_name: '', store_id: '', merchant_id: '', merchant_key: '', passphrase: '', environment: 'live', tag_on_payment: 'paid,customer', tag_on_fail: 'payment-failed', move_opp_stage: 'won', auto_create_contact: true, fire_workflow: true, whop_enabled: false, whop_api_key: '', whop_company_id: '', whop_webhook_secret: '', whop_exchange_rate: '280', whop_fee_percent: '0', whop_rate_mode: 'fixed' });
+  const [cfg,     setCfg]     = useState<Settings>({ merchant_name: '', store_id: '', merchant_id: '', merchant_key: '', passphrase: '', environment: 'live', tag_on_payment: 'paid,customer', tag_on_fail: 'payment-failed', move_opp_stage: 'won', auto_create_contact: true, fire_workflow: true, whop_enabled: false, whop_api_key: '', whop_company_id: '', whop_webhook_secret: '', whop_exchange_rate: '280', whop_fee_percent: '10', whop_rate_mode: 'fixed', whop_currency: 'PKR', route_oneoff: 'payfast', route_subscription: 'whop' });
   const [saving,  setSaving]  = useState(false);
   const [saved,   setSaved]   = useState(false);
   const [error,   setError]   = useState('');
@@ -248,6 +251,30 @@ export default function SettingsPage() {
                     <div style={whopHint}>Added on top of the order total.</div>
                   </div>
                 </div>
+              </div>
+
+              <div style={whopBox}>
+                <div style={whopBoxLabel}>Payment routing &mdash; choose which provider handles each type</div>
+
+                <label style={lbl}>One-time payments</label>
+                <div style={whopModeRow}>
+                  <div onClick={() => set('route_oneoff', 'payfast')} style={whopModeBtn((cfg.route_oneoff || 'payfast') === 'payfast')}>PayFast</div>
+                  <div onClick={() => set('route_oneoff', 'whop')} style={whopModeBtn((cfg.route_oneoff || 'payfast') === 'whop')}>Whop</div>
+                </div>
+
+                <label style={lbl}>Subscriptions</label>
+                <div style={whopModeRow}>
+                  <div onClick={() => set('route_subscription', 'payfast')} style={whopModeBtn((cfg.route_subscription || 'whop') === 'payfast')}>PayFast</div>
+                  <div onClick={() => set('route_subscription', 'whop')} style={whopModeBtn((cfg.route_subscription || 'whop') === 'whop')}>Whop</div>
+                </div>
+                <div style={whopHint}>Checkout automatically uses the selected provider for each payment type.</div>
+
+                <label style={lbl}>Whop product currency</label>
+                <div style={whopModeRow}>
+                  <div onClick={() => set('whop_currency', 'PKR')} style={whopModeBtn((cfg.whop_currency || 'PKR') === 'PKR')}>PKR &rarr; USD</div>
+                  <div onClick={() => set('whop_currency', 'USD')} style={whopModeBtn((cfg.whop_currency || 'PKR') === 'USD')}>USD as-is</div>
+                </div>
+                <div style={whopHint}>PKR: totals are converted to USD using the rate above. USD: the amount is charged directly (only the gateway fee is added).</div>
               </div>
 
               <div style={whopBox}>

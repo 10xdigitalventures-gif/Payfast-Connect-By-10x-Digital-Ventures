@@ -65,6 +65,9 @@ export interface Installation {
   whop_exchange_rate: number | null;
   whop_fee_percent: number | null;
   whop_rate_mode: string | null;
+  whop_currency: string | null;
+  route_oneoff: string | null;
+  route_subscription: string | null;
   tag_on_payment: string;
   tag_on_fail: string;
   move_opp_stage: string;
@@ -88,7 +91,8 @@ export interface Payment {
   provider: 'payfast' | 'whop';
   whop_plan_id: string | null;
   whop_checkout_id: string | null;
-  status: 'pending' | 'complete' | 'failed' | 'cancelled';
+  whop_membership_id: string | null;
+  status: 'pending' | 'complete' | 'failed' | 'cancelled' | 'refunded';
   synced_ghl: number;
   created_at: string;
 }
