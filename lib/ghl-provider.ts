@@ -50,27 +50,40 @@ async function ghlRequest(
 }
 
 async function ensureProviderKeys(locationId: string) {
-  const rows = await query<any[]>(
-    `SELECT provider_api_key, provider_publishable_key
-     FROM installations WHERE location_id = ? LIMIT 1`,
-    [locationId]
-  );
-
-  let apiKey = rows[0]?.provider_api_key || null;
-  let publishableKey = rows[0]?.provider_publishable_key || null;
-
-  if (!apiKey || !publishableKey) {
-    apiKey = apiKey || `sk_${crypto.randomBytes(24).toString('hex')}`;
-    publishableKey = publishableKey || `pk_${crypto.randomBytes(16).toString('hex')}`;
-    await query(
-      `UPDATE installations
-       SET provider_api_key = ?, provider_publishable_key = ?
-       WHERE location_id = ?`,
-      [apiKey, publishableKey, locationId]
+  const genApi = () => `sk_${crypto.randomBytes(24).toString('hex')}`;
+  const genPub = () => `pk_${crypto.randomBytes(16).toString('hex')}`;
+  try {
+    const rows = await query<any[]>(
+      `SELECT provider_api_key, provider_publishable_key
+       FROM installations WHERE location_id = ? LIMIT 1`,
+      [locationId]
     );
-  }
 
-  return { apiKey, publishableKey };
+    let apiKey = rows[0]?.provider_api_key || null;
+    let publishableKey = rows[0]?.provider_publishable_key || null;
+
+    if (!apiKey || !publishableKey) {
+      apiKey = apiKey || genApi();
+      publishableKey = publishableKey || genPub();
+      try {
+        await query(
+          `UPDATE installations
+           SET provider_api_key = ?, provider_publishable_key = ?
+           WHERE location_id = ?`,
+          [apiKey, publishableKey, locationId]
+        );
+      } catch (persistErr) {
+        // Columns may not exist yet (run scripts/add-ghl-apikey-field.sql).
+        // Degrade gracefully so the whole save does not fail.
+        console.error('[GHL Provider] could not persist provider keys', persistErr);
+      }
+    }
+
+    return { apiKey, publishableKey };
+  } catch (readErr) {
+    console.error('[GHL Provider] ensureProviderKeys read failed; using ephemeral keys', readErr);
+    return { apiKey: genApi(), publishableKey: genPub() };
+  }
 }
 
 /**

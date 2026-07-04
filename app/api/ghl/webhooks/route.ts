@@ -4,14 +4,19 @@ import { verifyGhlSignature } from '@/lib/ghl-webhooks';
 
 export async function POST(request: NextRequest) {
   try {
-    const signature = request.headers.get('x-ghl-signature') || '';
+    // GHL marketplace webhooks are signed with the `x-wh-signature` header.
+    const signature =
+      request.headers.get('x-wh-signature') ||
+      request.headers.get('x-ghl-signature') ||
+      '';
     const rawBody = await request.text();
-    
-    // 1. Verify Signature
+
+    // 1. Verify signature. If it cannot be verified we still ACK with 200 so
+    //    HighLevel stops retrying, but we skip all state changes for safety.
     const verification = verifyGhlSignature(rawBody, signature);
     if (!verification.ok) {
-      console.error('[GHL Webhook] Invalid signature:', verification.reason);
-      return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
+      console.warn('[GHL Webhook] signature not verified, acknowledging without processing:', verification.reason);
+      return NextResponse.json({ received: true, verified: false }, { status: 200 });
     }
 
     const body = JSON.parse(rawBody);

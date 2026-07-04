@@ -162,7 +162,11 @@ export async function POST(request: NextRequest) {
   } catch (err) {
     console.error('[GHL Config] save failed', err);
     return NextResponse.json(
-      { success: false, error: 'Something went wrong while saving. Please try again.' },
+      {
+        success: false,
+        error: 'Something went wrong while saving. Please try again.',
+        detail: err instanceof Error ? err.message : String(err),
+      },
       { status: 500 }
     );
   }

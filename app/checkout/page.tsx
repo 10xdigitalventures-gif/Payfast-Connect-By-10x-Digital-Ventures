@@ -140,18 +140,25 @@ export default function CheckoutPage() {
       }
     }
 
+    const receivedTypes = new Set<string>();
+
     function handleMessage(event: MessageEvent) {
       const d = event.data;
       if (!d || typeof d !== 'object') return;
 
+      if (typeof d.type === 'string') receivedTypes.add(d.type);
+
+      const amountNum = typeof d.amount === 'string' ? parseFloat(d.amount) : d.amount;
       const isPaymentInit =
         d.type === 'payment_initiate_props' ||
         d.type === 'payment-init' ||
-        (typeof d.amount === 'number' && d.locationId);
+        d.type === 'payment_initiate' ||
+        (typeof amountNum === 'number' && !Number.isNaN(amountNum) &&
+          (d.locationId || d.transactionId || d.orderId || d.invoiceId));
 
       if (isPaymentInit) {
         const incoming: GHLPaymentData = {
-          amount:         Number(d.amount),
+          amount:         Number(amountNum),
           currency:       d.currency || 'PKR',
           contactId:      d.contact?.id || d.contactId || '',
           locationId:     d.locationId,
@@ -179,27 +186,42 @@ export default function CheckoutPage() {
     }
     window.addEventListener('message', handleMessage);
 
-    setTimeout(() => {
+    // Announce readiness to HighLevel. GHL sends payment_initiate_props only
+    // AFTER it receives our ready signal, and its parent listener may not be
+    // attached the instant our iframe mounts — so we broadcast repeatedly
+    // until the payment context arrives (fixes the race that left the page
+    // stuck on "No payment context received").
+    const sendReady = () => {
       try {
         window.parent.postMessage(
           { type: 'custom_provider_ready', loaded: true, addCardOnFileSupported: true },
           '*'
         );
       } catch { /* not in iframe */ }
-    }, 50);
+    };
+    sendReady();
+    const readyTimer = setInterval(() => {
+      if (payDataRef.current) { clearInterval(readyTimer); return; }
+      sendReady();
+    }, 400);
 
     const t = setTimeout(() => {
+      clearInterval(readyTimer);
       if (!payDataRef.current) {
         setWaitingForGhl(false);
         setDebugMsg(
           'No payment context received from HighLevel. ' +
-          'If you opened this URL directly, please return to your CRM and use the payment link/funnel/invoice button.'
+          'If you opened this URL directly, please return to your CRM and use the payment link/funnel/invoice button.' +
+          (receivedTypes.size
+            ? ' [received: ' + Array.from(receivedTypes).join(', ') + ']'
+            : ' [no messages received from parent]')
         );
       }
-    }, 6000);
+    }, 12000);
 
     return () => {
       window.removeEventListener('message', handleMessage);
+      clearInterval(readyTimer);
       clearTimeout(t);
       stopPolling();
     };
