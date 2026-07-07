@@ -1,21 +1,30 @@
 import { query } from './db';
 
 const GHL_BASE = 'https://services.leadconnectorhq.com';
-const BACKEND_BASE = 'https://backend.leadconnectorhq.com';
+// SaaS Configurator public APIs are versioned under 2021-04-15.
+const SAAS_VERSION = '2021-04-15';
 
-async function refreshToken(refreshToken: string, useAgency = false) {
+async function refreshToken(refreshToken: string, useAgency = true) {
   if (!refreshToken) return null;
   try {
-    const clientId = useAgency ? process.env.AGENCY_GHL_CLIENT_ID || process.env.GHL_CLIENT_ID : process.env.GHL_CLIENT_ID;
-    const clientSecret = useAgency ? process.env.AGENCY_GHL_CLIENT_SECRET || process.env.GHL_CLIENT_SECRET : process.env.GHL_CLIENT_SECRET;
+    const clientId = useAgency
+      ? process.env.AGENCY_GHL_CLIENT_ID || process.env.GHL_CLIENT_ID
+      : process.env.GHL_CLIENT_ID;
+    const clientSecret = useAgency
+      ? process.env.AGENCY_GHL_CLIENT_SECRET || process.env.GHL_CLIENT_SECRET
+      : process.env.GHL_CLIENT_SECRET;
     const res = await fetch(`${GHL_BASE}/oauth/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ client_id: clientId || '', client_secret: clientSecret || '', grant_type: 'refresh_token', refresh_token: refreshToken }),
+      body: new URLSearchParams({
+        client_id: clientId || '',
+        client_secret: clientSecret || '',
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+      }),
     });
     if (!res.ok) return null;
-    const data = await res.json().catch(() => null);
-    return data;
+    return await res.json().catch(() => null);
   } catch (err) {
     return null;
   }
@@ -46,27 +55,64 @@ export async function getAgencyContext(locationId: string) {
   return { locationId, companyId: inst.company_id, accessToken: inst.access_token };
 }
 
-async function agencyFetch(path: string, opts: { method?: string; body?: any; base?: 'ghl' | 'backend' } = {}) {
-  const base = opts.base === 'backend' ? BACKEND_BASE : GHL_BASE;
-  const url = `${base}${path}`;
-  const res = await fetch(url, { method: opts.method || 'GET', headers: { Version: '2021-07-28', 'Content-Type': 'application/json' }, body: opts.body ? JSON.stringify(opts.body) : undefined });
+// Authenticated call to the GHL SaaS Configurator public API.
+// Requires an agency OAuth access token (Agency Pro / SaaS Pro plan).
+async function saasFetch(path: string, accessToken: string, opts: { method?: string; body?: any } = {}) {
+  if (!accessToken) throw new Error('Missing agency access token');
+  const res = await fetch(`${GHL_BASE}${path}`, {
+    method: opts.method || 'GET',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Version: SAAS_VERSION,
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
   const text = await res.text();
   let data: any = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
-  if (!res.ok) throw new Error(data?.message || data?.error || text || `Request failed ${res.status}`);
+  if (!res.ok) throw new Error(data?.message || data?.error || text || `SaaS request failed ${res.status}`);
   return data;
 }
 
-export async function getAgencyPlans(...args: any[]) {
-  // getAgencyPlans(companyId, accessToken?) - if accessToken provided, call directly; otherwise expect caller to proxy
-  const [companyId, accessToken] = args;
+// GET all agency SaaS plans for a company
+export async function getAgencyPlans(companyId: string, accessToken: string) {
   if (!companyId) return [];
-  // prefer calling public agency endpoint via backend which requires agency token; leaving simple fetch
-  return agencyFetch(`/saas/agency-plans/${companyId}`);
+  return saasFetch(`/saas-api/public-api/agency-plans/${companyId}`, accessToken);
 }
 
-export async function enableSaasLocation(...args: any[]) { const [locationId, body] = args; return agencyFetch(`/saas/enable-saas/${locationId}`, { method: 'POST', body }); }
-export async function getLocationSubscriptionDetails(...args: any[]) { const [locationId] = args; return agencyFetch(`/saas/get-saas-subscription/${locationId}`); }
-export async function pauseSaasLocation(...args: any[]) { const [locationId, body] = args; return agencyFetch(`/saas/pause-saas/${locationId}`, { method: 'POST', body }); }
-export async function updateRebilling(...args: any[]) { const [locationId, body] = args; return agencyFetch(`/saas/update-rebilling/${locationId}`, { method: 'POST', body }); }
-export async function updateSaasSubscription(...args: any[]) { const [locationId, body] = args; return agencyFetch(`/saas/update-saas-subscription/${locationId}`, { method: 'PUT', body }); }
+// GET SaaS subscription details for a sub-account
+export async function getLocationSubscriptionDetails(locationId: string, accessToken: string) {
+  return saasFetch(`/saas-api/public-api/location-subscription/${locationId}`, accessToken);
+}
+
+// POST enable SaaS for a single sub-account (Agency Pro plan)
+export async function enableSaasLocation(locationId: string, accessToken: string, body: any = {}) {
+  return saasFetch(`/saas/enable-saas/${locationId}`, accessToken, { method: 'POST', body });
+}
+
+// POST bulk enable SaaS for multiple sub-accounts under a company
+export async function bulkEnableSaas(companyId: string, accessToken: string, body: any = {}) {
+  return saasFetch(`/saas-api/public-api/bulk-enable-saas/${companyId}`, accessToken, { method: 'POST', body });
+}
+
+// POST bulk disable SaaS for multiple sub-accounts under a company
+export async function bulkDisableSaas(companyId: string, accessToken: string, body: any = {}) {
+  return saasFetch(`/saas-api/public-api/bulk-disable-saas/${companyId}`, accessToken, { method: 'POST', body });
+}
+
+// POST pause SaaS for a sub-account
+export async function pauseSaasLocation(locationId: string, accessToken: string, body: any = {}) {
+  return saasFetch(`/saas/pause-saas/${locationId}`, accessToken, { method: 'POST', body });
+}
+
+// POST bulk update rebilling for a company
+export async function updateRebilling(companyId: string, accessToken: string, body: any = {}) {
+  return saasFetch(`/saas-api/public-api/update-rebilling/${companyId}`, accessToken, { method: 'POST', body });
+}
+
+// PUT update SaaS subscription for a sub-account
+export async function updateSaasSubscription(locationId: string, accessToken: string, body: any = {}) {
+  return saasFetch(`/saas-api/public-api/update-saas-subscription/${locationId}`, accessToken, { method: 'PUT', body });
+}

@@ -35,8 +35,12 @@ export async function POST(request: NextRequest) {
   );
 
   await query(
-    `INSERT INTO agency_settings (id, merchant_id, merchant_key, merchant_name, store_id, passphrase, environment, grace_period_days, trial_days, notify_email)
-     VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO agency_settings
+       (id, merchant_id, merchant_key, merchant_name, store_id, passphrase, environment,
+        grace_period_days, trial_days, notify_email,
+        whop_api_key, whop_company_id, whop_webhook_secret, whop_exchange_rate,
+        whop_fee_percent, whop_rate_mode, whop_currency, route_subscription)
+     VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
        merchant_id = VALUES(merchant_id),
        merchant_key = VALUES(merchant_key),
@@ -46,7 +50,15 @@ export async function POST(request: NextRequest) {
        environment = VALUES(environment),
        grace_period_days = VALUES(grace_period_days),
        trial_days = VALUES(trial_days),
-       notify_email = VALUES(notify_email)`,
+       notify_email = VALUES(notify_email),
+       whop_api_key = VALUES(whop_api_key),
+       whop_company_id = VALUES(whop_company_id),
+       whop_webhook_secret = VALUES(whop_webhook_secret),
+       whop_exchange_rate = VALUES(whop_exchange_rate),
+       whop_fee_percent = VALUES(whop_fee_percent),
+       whop_rate_mode = VALUES(whop_rate_mode),
+       whop_currency = VALUES(whop_currency),
+       route_subscription = VALUES(route_subscription)`,
     [
       body.merchant_id || null,
       body.merchant_key || null,
@@ -57,6 +69,14 @@ export async function POST(request: NextRequest) {
       Number(body.grace_period_days || 3),
       Number(body.trial_days || 14),
       body.notify_email || null,
+      body.whop_api_key || null,
+      body.whop_company_id || null,
+      body.whop_webhook_secret || null,
+      Number(body.whop_exchange_rate || 280),
+      Number(body.whop_fee_percent || 0),
+      body.whop_rate_mode || 'fixed',
+      body.whop_currency || 'PKR',
+      body.route_subscription || 'payfast',
     ]
   );
 

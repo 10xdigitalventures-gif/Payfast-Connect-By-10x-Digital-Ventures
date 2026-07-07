@@ -87,13 +87,67 @@ export default function CheckoutPage() {
   const pollDeadline= useRef<number>(0);
   const basketRef   = useRef<string>('');
   const finishedRef = useRef<boolean>(false); // terminal message fires once
+  const dbgWrapRef   = useRef<HTMLDivElement | null>(null);
+  const dbgBodyRef   = useRef<HTMLDivElement | null>(null);
+  const dbgLinesRef  = useRef<string[]>([]);
 
   function stopPolling() {
     if (pollTimer.current) { clearInterval(pollTimer.current); pollTimer.current = null; }
   }
 
+  function logEvent(dir: 'in' | 'out' | 'info', text: string) {
+    const ts = new Date().toLocaleTimeString();
+    const color = dir === 'in' ? '#4ade80' : dir === 'out' ? '#fbbf24' : '#94a3b8';
+    const arrow = dir === 'in' ? '⬇ IN' : dir === 'out' ? '⬆ OUT' : 'ℹ';
+    const safe = text.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    const line =
+      '<div style="color:' + color + '"><span style="color:#64748b">' + ts + '</span> ' + arrow + ' ' + safe + '</div>';
+    dbgLinesRef.current = [...dbgLinesRef.current.slice(-60), line];
+    try { console.log('[checkout ' + dir + ']', text); } catch { /* ignore */ }
+    const body = dbgBodyRef.current;
+    if (body) { body.innerHTML = dbgLinesRef.current.join(''); body.scrollTop = body.scrollHeight; }
+  }
+
+  // GHL frequently nests the payment iframe, so window.parent may be an
+  // intermediate frame while the window that dispatches payment_initiate_props
+  // is window.top (or another ancestor). Broadcasting to every ancestor makes
+  // the handshake reliable regardless of nesting depth.
+  function postToAncestors(payload: Record<string, unknown>) {
+    const targets = new Set<Window>();
+    try { if (window.parent && window.parent !== window) targets.add(window.parent); } catch { /* ignore */ }
+    try { if (window.top && window.top !== window) targets.add(window.top as Window); } catch { /* ignore */ }
+    try { if (window.parent && window.parent.parent && window.parent.parent !== window) targets.add(window.parent.parent); } catch { /* ignore */ }
+    let n = 0;
+    targets.forEach((w) => { try { w.postMessage(payload, '*'); n++; } catch { /* ignore */ } });
+    return n;
+  }
+
+  // Floating on-screen log so we can SEE which postMessage events fire inside
+  // the GHL iframe (enable with ?debug=1, and auto-shown if we get stuck).
+  function ensureDbgOverlay() {
+    if (dbgWrapRef.current || typeof document === 'undefined') return;
+    const wrap = document.createElement('div');
+    wrap.setAttribute('style', 'position:fixed;left:8px;right:8px;bottom:8px;max-height:42vh;overflow:auto;z-index:2147483647;background:rgba(2,6,23,0.94);color:#e2e8f0;font:11px/1.55 ui-monospace,Menlo,monospace;border-radius:10px;padding:10px 12px;box-shadow:0 8px 30px rgba(0,0,0,.45)');
+    const hdr = document.createElement('div');
+    hdr.setAttribute('style', 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px');
+    hdr.innerHTML = '<strong style="color:#38bdf8">GHL postMessage debug</strong>';
+    const btn = document.createElement('button');
+    btn.textContent = 'clear';
+    btn.setAttribute('style', 'background:transparent;color:#94a3b8;border:1px solid #334155;border-radius:6px;cursor:pointer;font:11px ui-monospace,monospace;padding:2px 10px');
+    btn.onclick = () => { dbgLinesRef.current = []; if (dbgBodyRef.current) dbgBodyRef.current.innerHTML = ''; };
+    hdr.appendChild(btn);
+    const body = document.createElement('div');
+    wrap.appendChild(hdr);
+    wrap.appendChild(body);
+    document.body.appendChild(wrap);
+    dbgWrapRef.current = wrap;
+    dbgBodyRef.current = body;
+    if (dbgLinesRef.current.length) { body.innerHTML = dbgLinesRef.current.join(''); body.scrollTop = body.scrollHeight; }
+  }
+
   function notifyGhl(payload: Record<string, unknown>) {
-    try { window.parent.postMessage(payload, '*'); } catch { /* not in iframe */ }
+    const n = postToAncestors(payload);
+    logEvent('out', String(payload.type) + ' → ' + n + ' ancestor(s)');
   }
 
   function finishSuccess(chargeId: string) {
@@ -126,6 +180,10 @@ export default function CheckoutPage() {
   }
 
   useEffect(() => {
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      if (sp.get('debug') === '1' || sp.get('debug') === 'true') ensureDbgOverlay();
+    } catch { /* ignore */ }
     const fromUrl = readUrlPayData();
     if (fromUrl) {
       setPayData(fromUrl);
@@ -145,8 +203,10 @@ export default function CheckoutPage() {
     function handleMessage(event: MessageEvent) {
       const d = event.data;
       if (!d || typeof d !== 'object') return;
+      if (typeof d.source === 'string' && d.source.indexOf('react-devtools') === 0) return;
 
       if (typeof d.type === 'string') receivedTypes.add(d.type);
+      logEvent('in', (d.type || '(no type)') + ' from ' + (event.origin || '(null)') + ' · keys: ' + (Object.keys(d).join(', ') || '—'));
 
       const amountNum = typeof d.amount === 'string' ? parseFloat(d.amount) : d.amount;
       const isPaymentInit =
@@ -191,13 +251,14 @@ export default function CheckoutPage() {
     // attached the instant our iframe mounts — so we broadcast repeatedly
     // until the payment context arrives (fixes the race that left the page
     // stuck on "No payment context received").
+    try {
+      const ao = (window.location as any).ancestorOrigins;
+      const origins = ao ? Array.from(ao as ArrayLike<string>).join(', ') : '(n/a)';
+      logEvent('info', 'inIframe=' + (window !== window.top) + ' · referrer=' + (document.referrer || '—') + ' · ancestorOrigins=[' + origins + ']');
+    } catch { /* ignore */ }
     const sendReady = () => {
-      try {
-        window.parent.postMessage(
-          { type: 'custom_provider_ready', loaded: true, addCardOnFileSupported: true },
-          '*'
-        );
-      } catch { /* not in iframe */ }
+      const n = postToAncestors({ type: 'custom_provider_ready', loaded: true, addCardOnFileSupported: true });
+      logEvent('out', 'custom_provider_ready → ' + n + ' ancestor(s)');
     };
     sendReady();
     const readyTimer = setInterval(() => {
@@ -209,6 +270,7 @@ export default function CheckoutPage() {
       clearInterval(readyTimer);
       if (!payDataRef.current) {
         setWaitingForGhl(false);
+        ensureDbgOverlay();
         setDebugMsg(
           'No payment context received from HighLevel. ' +
           'If you opened this URL directly, please return to your CRM and use the payment link/funnel/invoice button.' +
@@ -224,6 +286,7 @@ export default function CheckoutPage() {
       clearInterval(readyTimer);
       clearTimeout(t);
       stopPolling();
+      try { dbgWrapRef.current?.remove(); dbgWrapRef.current = null; dbgBodyRef.current = null; } catch { /* ignore */ }
     };
   }, []);
 

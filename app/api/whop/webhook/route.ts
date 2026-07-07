@@ -1,11 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query, Installation } from '@/lib/db';
 import { verifyWhopSignature } from '@/lib/whop';
+import { getAgencySettings } from '@/lib/billing';
 import { handlePaymentSync } from '@/lib/ghl';
 
 // Whop -> our app webhook (Standard Webhooks signed).
 // Mirrors the PayFast ITN success path: verify signature, mark the payment
 // complete, then notify the CRM so invoices/orders are marked paid.
+//
+// Also handles AGENCY SaaS subscriptions (metadata.kind === 'agency_saas'):
+// verified against the agency's own Whop webhook secret, it records the
+// provider + Whop identifiers (member/payment_method/membership) into
+// location_subscriptions so the subscription is tracked and chargeable.
 //
 // Configure this URL in the Whop dashboard:
 //   {NEXT_PUBLIC_APP_URL}/api/whop/webhook
@@ -28,6 +34,12 @@ export async function POST(request: NextRequest) {
   const meta = (data?.data?.metadata as Record<string, string>) || {};
   const basketId = meta.basketId || meta.woo_order_id || '';
   const locationId = meta.location_id || '';
+  const kind = meta.kind || '';
+
+  // ─── Agency SaaS subscription branch ─────────────────────────────
+  if (kind === 'agency_saas') {
+    return handleAgencySaasWebhook({ data, rawBody, msgId, timestamp, signature, meta, locationId });
+  }
 
   if (!basketId || !locationId) {
     return new NextResponse('Missing metadata', { status: 400 });
@@ -40,7 +52,7 @@ export async function POST(request: NextRequest) {
   if (!instRows.length) return new NextResponse('Installation not found', { status: 404 });
   const inst = instRows[0];
 
-  // ─── Security gate: verify signature before doing anything ──────────
+  // ─── Security gate: verify signature before doing anything ──────
   const secret = inst.whop_webhook_secret || '';
   if (!verifyWhopSignature({ msgId, timestamp, signature, rawBody, secret })) {
     console.warn('[Whop Webhook] signature verification failed — rejected.');
@@ -158,6 +170,84 @@ export async function POST(request: NextRequest) {
       await query(`UPDATE schedule_installments SET status = 'paid', paid_at = NOW(), pf_payment_id = ? WHERE id = ?`, [whopPaymentId, sourceMeta.id]);
     }
   }
+
+  return new NextResponse('OK', { status: 200 });
+}
+
+// Handles agency SaaS subscription lifecycle events from the agency's own Whop
+// account. Verified with agency_settings.whop_webhook_secret.
+async function handleAgencySaasWebhook(args: {
+  data: any;
+  rawBody: string;
+  msgId: string | null;
+  timestamp: string | null;
+  signature: string | null;
+  meta: Record<string, string>;
+  locationId: string;
+}): Promise<NextResponse> {
+  const { data, rawBody, msgId, timestamp, signature, meta, locationId } = args;
+  if (!locationId) return new NextResponse('Missing location', { status: 400 });
+
+  const settings = await getAgencySettings();
+  const secret = settings?.whop_webhook_secret || '';
+  if (!verifyWhopSignature({ msgId, timestamp, signature, rawBody, secret })) {
+    console.warn('[Agency SaaS Whop Webhook] signature verification failed — rejected.');
+    return new NextResponse('Invalid signature', { status: 401 });
+  }
+
+  const eventType = String(data?.type || data?.action || '');
+  const d = data?.data || {};
+  const memberId = d.member_id || d.member?.id || d.user_id || d.user?.id || null;
+  const paymentMethodId = d.payment_method_id || d.payment_method?.id || null;
+  const membershipId = d.membership_id || d.membership?.id || null;
+
+  // Suspend on failed payment or membership going invalid.
+  const suspend =
+    eventType === 'payment.failed' || eventType === 'payment_failed' ||
+    eventType === 'membership.went_invalid' || eventType === 'membership_went_invalid';
+  if (suspend) {
+    await query(`UPDATE location_subscriptions SET status = 'suspended' WHERE location_id = ?`, [locationId]);
+    return new NextResponse('OK', { status: 200 });
+  }
+
+  // Activate / renew on success, membership validation, or saved payment method.
+  const activate =
+    eventType === 'payment.succeeded' || eventType === 'payment_succeeded' ||
+    eventType === 'membership.went_valid' || eventType === 'membership_went_valid' ||
+    eventType === 'setup_intent.succeeded';
+  if (!activate) return new NextResponse('Ignored', { status: 200 });
+
+  // Advance one billing cycle from now.
+  const freq = String(meta.frequency || 'monthly').toLowerCase();
+  const next = new Date();
+  if (freq === 'yearly' || freq === 'annual' || freq === 'annually') {
+    next.setFullYear(next.getFullYear() + 1);
+  } else {
+    next.setMonth(next.getMonth() + 1);
+  }
+
+  const planId = meta.plan_id ? Number(meta.plan_id) : null;
+  const amount = meta.pkr_amount ? Number(meta.pkr_amount) : null;
+  const email = meta.customer_email || null;
+
+  await query(
+    `INSERT INTO location_subscriptions
+      (location_id, plan_id, provider, status, current_period_start, current_period_end,
+       amount, payer_email, whop_member_id, whop_payment_method_id, whop_membership_id)
+     VALUES (?, ?, 'whop', 'active', NOW(), ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       plan_id = COALESCE(VALUES(plan_id), plan_id),
+       provider = 'whop',
+       status = 'active',
+       current_period_start = NOW(),
+       current_period_end = VALUES(current_period_end),
+       amount = COALESCE(VALUES(amount), amount),
+       payer_email = COALESCE(VALUES(payer_email), payer_email),
+       whop_member_id = COALESCE(VALUES(whop_member_id), whop_member_id),
+       whop_payment_method_id = COALESCE(VALUES(whop_payment_method_id), whop_payment_method_id),
+       whop_membership_id = COALESCE(VALUES(whop_membership_id), whop_membership_id)`,
+    [locationId, planId, next, amount, email, memberId, paymentMethodId, membershipId]
+  );
 
   return new NextResponse('OK', { status: 200 });
 }
