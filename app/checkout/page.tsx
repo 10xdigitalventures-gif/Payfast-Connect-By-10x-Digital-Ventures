@@ -309,7 +309,10 @@ export default function CheckoutPage() {
 
       const amountNum =
         typeof d.amount === "string" ? parseFloat(d.amount) : d.amount;
+      const isSetupInit =
+        d.type === "setup_initiate_props" || d.mode === "setup";
       const isPaymentInit =
+        isSetupInit ||
         d.type === "payment_initiate_props" ||
         d.type === "payment-init" ||
         d.type === "payment_initiate" ||
@@ -319,7 +322,7 @@ export default function CheckoutPage() {
 
       if (isPaymentInit) {
         const incoming: GHLPaymentData = {
-          amount: Number(amountNum),
+          amount: isSetupInit ? 0 : Number(amountNum),
           currency: d.currency || "PKR",
           contactId: d.contact?.id || d.contactId || "",
           locationId: d.locationId,
@@ -334,6 +337,7 @@ export default function CheckoutPage() {
         };
         setPayData(incoming);
         payDataRef.current = incoming;
+        if (isSetupInit) setMethod("whop");
         setWaitingForGhl(false);
         if (incoming.contact) {
           setForm({
@@ -560,6 +564,32 @@ export default function CheckoutPage() {
     setError("");
 
     try {
+      if (payData.mode === "setup") {
+        const setupRes = await fetch("/api/whop/setup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            locationId: payData.locationId,
+            contactId: payData.contactId,
+            email: form.email,
+            name: form.name,
+          }),
+        });
+        const setupData = await setupRes.json().catch(() => ({}));
+        if (!setupRes.ok || !setupData?.redirectUrl || !setupData?.basketId) {
+          throw new Error(
+            setupData?.error || "Could not start secure card setup.",
+          );
+        }
+        basketRef.current = setupData.basketId;
+        popup.location.href = setupData.redirectUrl;
+        setStage("waiting");
+        setStatusMsg(
+          "Add your card in the secure Whop window. No payment will be charged.",
+        );
+        startPolling();
+        return;
+      }
       if (method === "whop") {
         const wRes = await fetch("/api/whop/pay", {
           method: "POST",
@@ -955,22 +985,28 @@ export default function CheckoutPage() {
           }}
         >
           <div style={{ fontSize: 12, color: "#64748B", marginBottom: 6 }}>
-            {payData.description ||
-              (payData.subscriptionId ? "Subscription Payment" : "Amount Due")}
+            {payData.mode === "setup"
+              ? "Save payment method"
+              : payData.description ||
+                (payData.subscriptionId
+                  ? "Subscription Payment"
+                  : "Amount Due")}
           </div>
-          <div
-            style={{
-              fontFamily: "var(--font-head)",
-              fontSize: 32,
-              fontWeight: 800,
-              color: "#0052FF",
-            }}
-          >
-            {payData.currency || "PKR"}{" "}
-            {Number(payData.amount).toLocaleString("en-PK", {
-              minimumFractionDigits: 2,
-            })}
-          </div>
+          {payData.mode !== "setup" && (
+            <div
+              style={{
+                fontFamily: "var(--font-head)",
+                fontSize: 32,
+                fontWeight: 800,
+                color: "#0052FF",
+              }}
+            >
+              {payData.currency || "PKR"}{" "}
+              {Number(payData.amount).toLocaleString("en-PK", {
+                minimumFractionDigits: 2,
+              })}
+            </div>
+          )}
           {payData.subscriptionId && (
             <div style={{ fontSize: 11, color: "#94A3B8", marginTop: 6 }}>
               Recurring subscription · Auto-charged
@@ -978,7 +1014,7 @@ export default function CheckoutPage() {
           )}
         </div>
 
-        {providers.payfast && providers.whop && (
+        {payData.mode !== "setup" && providers.payfast && providers.whop && (
           <div style={methodCard}>
             <div style={methodLabel}>Payment Method</div>
             <div style={methodGrid}>
@@ -1122,7 +1158,9 @@ export default function CheckoutPage() {
         >
           {loading
             ? "Processing…"
-            : `Pay ${payData.currency || "PKR"} ${Number(payData.amount).toLocaleString()}${providers.payfast && providers.whop ? (method === "whop" ? " with Whop" : " with GoPayFast") : ""} →`}
+            : payData.mode === "setup"
+              ? "Save card securely with Whop →"
+              : `Pay ${payData.currency || "PKR"} ${Number(payData.amount).toLocaleString()}${providers.payfast && providers.whop ? (method === "whop" ? " with Whop" : " with GoPayFast") : ""} →`}
         </button>
 
         <div

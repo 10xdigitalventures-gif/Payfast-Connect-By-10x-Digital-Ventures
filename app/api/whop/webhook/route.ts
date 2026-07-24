@@ -1,9 +1,10 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { query, Installation } from '@/lib/db';
-import { verifyWhopSignature } from '@/lib/whop';
-import { getAgencySettings } from '@/lib/billing';
-import { handlePaymentSync } from '@/lib/ghl';
-import { suspendClientLocation, resumeClientLocation } from '@/lib/suspension';
+import { NextRequest, NextResponse } from "next/server";
+import { query, Installation } from "@/lib/db";
+import { verifyWhopSignature } from "@/lib/whop";
+import { getAgencySettings } from "@/lib/billing";
+import { handlePaymentSync } from "@/lib/ghl";
+import { suspendClientLocation, resumeClientLocation } from "@/lib/suspension";
+import { savePaymentInstrument } from "@/lib/payment-instruments";
 
 // Whop -> our app webhook (Standard Webhooks signed).
 // Mirrors the PayFast ITN success path: verify signature, mark the payment
@@ -20,9 +21,9 @@ export async function POST(request: NextRequest) {
   // RAW body first — required for signature verification (before JSON parse).
   const rawBody = await request.text();
 
-  const msgId = request.headers.get('webhook-id');
-  const timestamp = request.headers.get('webhook-timestamp');
-  const signature = request.headers.get('webhook-signature');
+  const msgId = request.headers.get("webhook-id");
+  const timestamp = request.headers.get("webhook-timestamp");
+  const signature = request.headers.get("webhook-signature");
 
   let data: any = null;
   try {
@@ -30,58 +31,107 @@ export async function POST(request: NextRequest) {
   } catch {
     data = null;
   }
-  if (!data) return new NextResponse('Invalid payload', { status: 400 });
+  if (!data) return new NextResponse("Invalid payload", { status: 400 });
 
   const meta = (data?.data?.metadata as Record<string, string>) || {};
-  const basketId = meta.basketId || meta.woo_order_id || '';
-  const locationId = meta.location_id || '';
-  const kind = meta.kind || '';
+  const basketId = meta.basketId || meta.woo_order_id || meta.setup_id || "";
+  const locationId = meta.location_id || "";
+  const kind = meta.kind || "";
 
   // ─── Agency SaaS subscription branch ─────────────────────────────
-  if (kind === 'agency_saas') {
-    return handleAgencySaasWebhook({ data, rawBody, msgId, timestamp, signature, meta, locationId });
+  if (kind === "agency_saas") {
+    return handleAgencySaasWebhook({
+      data,
+      rawBody,
+      msgId,
+      timestamp,
+      signature,
+      meta,
+      locationId,
+    });
   }
 
   if (!basketId || !locationId) {
-    return new NextResponse('Missing metadata', { status: 400 });
+    return new NextResponse("Missing metadata", { status: 400 });
   }
 
   const instRows = await query<Installation[]>(
-    'SELECT * FROM installations WHERE location_id = ?',
-    [locationId]
+    "SELECT * FROM installations WHERE location_id = ?",
+    [locationId],
   );
-  if (!instRows.length) return new NextResponse('Installation not found', { status: 404 });
+  if (!instRows.length)
+    return new NextResponse("Installation not found", { status: 404 });
   const inst = instRows[0];
 
   // ─── Security gate: verify signature before doing anything ──────
-  const secret = inst.whop_webhook_secret || '';
+  const secret = inst.whop_webhook_secret || "";
   if (!verifyWhopSignature({ msgId, timestamp, signature, rawBody, secret })) {
-    console.warn('[Whop Webhook] signature verification failed — rejected.');
-    return new NextResponse('Invalid signature', { status: 401 });
+    console.warn("[Whop Webhook] signature verification failed — rejected.");
+    return new NextResponse("Invalid signature", { status: 401 });
   }
 
-  const eventType = String(data?.type || data?.action || '');
+  const eventType = String(data?.type || data?.action || "");
+
+  // HighLevel's "Add card on file" opens a Whop checkout in setup mode.
+  // Whop confirms it with setup_intent.succeeded (not payment.succeeded).
+  if (
+    kind === "ghl_payment_method_setup" &&
+    (eventType === "setup_intent.succeeded" ||
+      eventType === "setup_intent_succeeded")
+  ) {
+    const setup = data?.data || {};
+    const paymentMethod = setup.payment_method || {};
+    const member = setup.member || {};
+    const paymentMethodId = String(
+      paymentMethod.id || setup.payment_method_id || "",
+    );
+    if (!paymentMethodId)
+      return new NextResponse("Missing payment method", { status: 400 });
+
+    const card = paymentMethod.card || {};
+    await savePaymentInstrument(locationId, {
+      instrumentToken: paymentMethodId,
+      instrumentAlias: card.brand || "Whop card",
+      cardLastFour: card.last4 || card.last_four || null,
+      expiryDate:
+        card.exp_month && card.exp_year
+          ? `${card.exp_month}/${String(card.exp_year).slice(-2)}`
+          : null,
+      isDefault: true,
+    });
+    await query(
+      `UPDATE payments SET status = 'complete', pf_payment_id = ?, raw_itn = ?, updated_at = NOW()
+       WHERE pf_token = ? AND location_id = ?`,
+      [
+        String(setup.id || paymentMethodId),
+        JSON.stringify({ ...data, whop_member_id: member.id || null }),
+        basketId,
+        locationId,
+      ],
+    );
+    return new NextResponse("OK", { status: 200 });
+  }
 
   // Handle failed payments: mark the pending row failed so the checkout poller
   // and the CRM see the decline instead of waiting for a timeout.
-  if (eventType === 'payment.failed' || eventType === 'payment_failed') {
+  if (eventType === "payment.failed" || eventType === "payment_failed") {
     await query(
       `UPDATE payments SET status = 'failed', raw_itn = ?, updated_at = NOW()
          WHERE pf_token = ? AND location_id = ? AND status = 'pending'`,
-      [JSON.stringify(data), basketId, locationId]
+      [JSON.stringify(data), basketId, locationId],
     );
-    return new NextResponse('OK', { status: 200 });
+    return new NextResponse("OK", { status: 200 });
   }
 
   // ── Invoice paid: mark the matching invoice in our DB and sync GHL ────────
   // Whop fires invoice.paid when an invoice (created via the Invoices API) is
   // settled. We reflect the payment into billing_invoices and notify GHL so
   // the CRM invoice shows as paid.
-  if (eventType === 'invoice.paid' || eventType === 'invoice_paid') {
+  if (eventType === "invoice.paid" || eventType === "invoice_paid") {
     const inv = data?.data || {};
-    const whopInvId = inv.id || '';
+    const whopInvId = inv.id || "";
     const whopPaymentId = inv.payment?.id || inv.payment_id || whopInvId;
-    const invEmail = inv.email_address || '';
+    const invEmail = inv.email_address || "";
     const invAmount = inv.current_plan?.price ?? inv.amount ?? 0;
 
     if (whopInvId) {
@@ -89,91 +139,103 @@ export async function POST(request: NextRequest) {
         `UPDATE billing_invoices
            SET status = 'paid', paid_at = NOW(), payment_id = ?
            WHERE whop_invoice_id = ? AND location_id = ?`,
-        [String(whopPaymentId), String(whopInvId), locationId]
+        [String(whopPaymentId), String(whopInvId), locationId],
       ).catch(() => {}); // table may not have whop_invoice_id yet — non-fatal
     }
 
     // Best-effort GHL notify. The GHL transaction id travels in the checkout
     // metadata (meta.ghl_transaction_id) — the `payment` DB row is only fetched
     // later in this handler, so we read it from metadata here.
-    const invGhlTxnId = meta.ghl_transaction_id || '';
+    const invGhlTxnId = meta.ghl_transaction_id || "";
     if (invGhlTxnId) {
       fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/ghl/notify`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           locationId,
           ghlTransactionId: invGhlTxnId,
           chargeId: String(whopPaymentId),
           amount: invAmount,
-          eventType: 'payment.captured',
+          eventType: "payment.captured",
         }),
       }).catch(() => {});
     }
-    return new NextResponse('OK', { status: 200 });
+    return new NextResponse("OK", { status: 200 });
   }
 
   // invoice.created / invoice.updated — acknowledge without state changes.
-  if (eventType === 'invoice.created' || eventType === 'invoice_created' ||
-      eventType === 'invoice.updated' || eventType === 'invoice_updated') {
-    return new NextResponse('OK', { status: 200 });
+  if (
+    eventType === "invoice.created" ||
+    eventType === "invoice_created" ||
+    eventType === "invoice.updated" ||
+    eventType === "invoice_updated"
+  ) {
+    return new NextResponse("OK", { status: 200 });
   }
 
   // Best-effort: reflect Whop-side refunds back into our records.
-  if (eventType === 'refund.created' || eventType === 'refund_created') {
-    const refundedWhopId = data?.data?.payment?.id || data?.data?.payment_id || data?.data?.id || '';
+  if (eventType === "refund.created" || eventType === "refund_created") {
+    const refundedWhopId =
+      data?.data?.payment?.id || data?.data?.payment_id || data?.data?.id || "";
     if (refundedWhopId) {
       await query(
         `UPDATE payments SET status = 'refunded', updated_at = NOW()
            WHERE pf_payment_id = ? AND location_id = ?`,
-        [String(refundedWhopId), locationId]
+        [String(refundedWhopId), locationId],
       );
     }
-    return new NextResponse('OK', { status: 200 });
+    return new NextResponse("OK", { status: 200 });
   }
 
   // Only act on successful payments beyond this point.
-  const isSuccess = eventType === 'payment.succeeded' || eventType === 'payment_succeeded';
+  const isSuccess =
+    eventType === "payment.succeeded" || eventType === "payment_succeeded";
   // membership.renewed = Whop confirms a recurring cycle renewed successfully.
   // Treat it like payment.succeeded for idempotent re-activation.
-  const isMembershipRenewed = eventType === 'membership.renewed' || eventType === 'membership_renewed';
+  const isMembershipRenewed =
+    eventType === "membership.renewed" || eventType === "membership_renewed";
   if (!isSuccess && !isMembershipRenewed) {
-    return new NextResponse('Ignored', { status: 200 });
+    return new NextResponse("Ignored", { status: 200 });
   }
 
   const paymentRows = await query<any[]>(
     `SELECT * FROM payments WHERE pf_token = ? AND location_id = ? ORDER BY id DESC LIMIT 1`,
-    [basketId, locationId]
+    [basketId, locationId],
   );
-  if (!paymentRows.length) return new NextResponse('Payment not found', { status: 404 });
+  if (!paymentRows.length)
+    return new NextResponse("Payment not found", { status: 404 });
   const payment = paymentRows[0];
 
   // Idempotency — Whop can retry/duplicate webhooks.
-  if (payment.status === 'complete') {
-    return new NextResponse('Already processed', { status: 200 });
+  if (payment.status === "complete") {
+    return new NextResponse("Already processed", { status: 200 });
   }
 
   const whopPaymentId = data?.data?.id ? String(data.data.id) : basketId;
   // Capture the membership id for subscriptions so we can cancel it later.
-  const whopMembershipId = data?.data?.membership?.id ? String(data.data.membership.id) : null;
+  const whopMembershipId = data?.data?.membership?.id
+    ? String(data.data.membership.id)
+    : null;
 
   let metadata: any = null;
   try {
-    metadata = payment.item_description ? JSON.parse(payment.item_description) : null;
+    metadata = payment.item_description
+      ? JSON.parse(payment.item_description)
+      : null;
   } catch {
     metadata = null;
   }
 
   await query(
     `UPDATE payments SET pf_payment_id = ?, status = 'complete', whop_membership_id = COALESCE(?, whop_membership_id), raw_itn = ?, updated_at = NOW() WHERE id = ?`,
-    [whopPaymentId, whopMembershipId, JSON.stringify(data), payment.id]
+    [whopPaymentId, whopMembershipId, JSON.stringify(data), payment.id],
   );
 
   // ─── Notify the CRM (identical contract to the PayFast flow) ────────
   if (payment.custom_str3) {
     fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/ghl/notify`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         locationId,
         ghlTransactionId: payment.custom_str3,
@@ -182,46 +244,70 @@ export async function POST(request: NextRequest) {
         contactId: metadata?.contactId || payment.contact_id || null,
         invoiceId: metadata?.invoiceId || null,
         orderId: metadata?.orderId || null,
-        eventType: payment.payment_type === 'subscription' ? 'subscription.charged' : 'payment.captured',
+        eventType:
+          payment.payment_type === "subscription"
+            ? "subscription.charged"
+            : "payment.captured",
       }),
-    }).catch((e) => console.error('[Whop→CRM Notify]', e));
+    }).catch((e) => console.error("[Whop→CRM Notify]", e));
   } else {
     // Standalone (public pay link / funnel) flow — sync contact + tags.
-    const tags = (inst.tag_on_payment || 'paid,customer').split(',').map((t) => t.trim()).filter(Boolean);
+    const tags = (inst.tag_on_payment || "paid,customer")
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
     const ghlId = await handlePaymentSync({
       locationId,
       email: payment.payer_email,
-      firstName: payment.payer_first || '',
-      lastName: payment.payer_last || '',
+      firstName: payment.payer_first || "",
+      lastName: payment.payer_last || "",
       contactId: payment.contact_id || undefined,
       tags,
-      oppStatus: inst.move_opp_stage || 'won',
+      oppStatus: inst.move_opp_stage || "won",
       autoCreate: !!inst.auto_create_contact,
     });
 
     if (ghlId) {
-      await query('UPDATE payments SET synced_ghl = 1, contact_id = ? WHERE id = ?', [ghlId, payment.id]);
+      await query(
+        "UPDATE payments SET synced_ghl = 1, contact_id = ? WHERE id = ?",
+        [ghlId, payment.id],
+      );
     }
 
     const sourceMeta = metadata?.kind ? metadata : null;
-    if (sourceMeta?.kind === 'invoice') {
-      await query(`UPDATE invoices SET status = 'paid', paid_at = NOW(), pf_payment_id = ? WHERE id = ?`, [whopPaymentId, sourceMeta.id]);
+    if (sourceMeta?.kind === "invoice") {
+      await query(
+        `UPDATE invoices SET status = 'paid', paid_at = NOW(), pf_payment_id = ? WHERE id = ?`,
+        [whopPaymentId, sourceMeta.id],
+      );
     }
-    if (sourceMeta?.kind === 'payment_link') {
-      await query('UPDATE payment_links SET uses_count = uses_count + 1 WHERE id = ?', [sourceMeta.id]);
+    if (sourceMeta?.kind === "payment_link") {
+      await query(
+        "UPDATE payment_links SET uses_count = uses_count + 1 WHERE id = ?",
+        [sourceMeta.id],
+      );
     }
-    if (sourceMeta?.kind === 'text2pay') {
-      await query(`UPDATE text2pay SET status = 'paid', paid_at = NOW(), pf_payment_id = ? WHERE id = ?`, [whopPaymentId, sourceMeta.id]);
+    if (sourceMeta?.kind === "text2pay") {
+      await query(
+        `UPDATE text2pay SET status = 'paid', paid_at = NOW(), pf_payment_id = ? WHERE id = ?`,
+        [whopPaymentId, sourceMeta.id],
+      );
     }
-    if (sourceMeta?.kind === 'order_form') {
-      await query('UPDATE order_forms SET submissions = submissions + 1 WHERE id = ?', [sourceMeta.id]);
+    if (sourceMeta?.kind === "order_form") {
+      await query(
+        "UPDATE order_forms SET submissions = submissions + 1 WHERE id = ?",
+        [sourceMeta.id],
+      );
     }
-    if (sourceMeta?.kind === 'schedule_installment') {
-      await query(`UPDATE schedule_installments SET status = 'paid', paid_at = NOW(), pf_payment_id = ? WHERE id = ?`, [whopPaymentId, sourceMeta.id]);
+    if (sourceMeta?.kind === "schedule_installment") {
+      await query(
+        `UPDATE schedule_installments SET status = 'paid', paid_at = NOW(), pf_payment_id = ? WHERE id = ?`,
+        [whopPaymentId, sourceMeta.id],
+      );
     }
   }
 
-  return new NextResponse('OK', { status: 200 });
+  return new NextResponse("OK", { status: 200 });
 }
 
 // Handles agency SaaS subscription lifecycle events from the agency's own Whop
@@ -236,50 +322,57 @@ async function handleAgencySaasWebhook(args: {
   locationId: string;
 }): Promise<NextResponse> {
   const { data, rawBody, msgId, timestamp, signature, meta, locationId } = args;
-  if (!locationId) return new NextResponse('Missing location', { status: 400 });
+  if (!locationId) return new NextResponse("Missing location", { status: 400 });
 
   const settings = await getAgencySettings();
-  const secret = settings?.whop_webhook_secret || '';
+  const secret = settings?.whop_webhook_secret || "";
   if (!verifyWhopSignature({ msgId, timestamp, signature, rawBody, secret })) {
-    console.warn('[Agency SaaS Whop Webhook] signature verification failed — rejected.');
-    return new NextResponse('Invalid signature', { status: 401 });
+    console.warn(
+      "[Agency SaaS Whop Webhook] signature verification failed — rejected.",
+    );
+    return new NextResponse("Invalid signature", { status: 401 });
   }
 
-  const eventType = String(data?.type || data?.action || '');
+  const eventType = String(data?.type || data?.action || "");
   const d = data?.data || {};
-  const memberId = d.member_id || d.member?.id || d.user_id || d.user?.id || null;
+  const memberId =
+    d.member_id || d.member?.id || d.user_id || d.user?.id || null;
   const paymentMethodId = d.payment_method_id || d.payment_method?.id || null;
   const membershipId = d.membership_id || d.membership?.id || null;
 
   // Look up prior state so we only fire GHL transitions on real changes.
   const prevRows = await query<any[]>(
     `SELECT status FROM location_subscriptions WHERE location_id = ? LIMIT 1`,
-    [locationId]
+    [locationId],
   );
   const prevStatus = prevRows?.[0]?.status || null;
 
   // ── Suspend on failed payment or membership going invalid (Model 1) ──
   // Model 1 = Whop owns recurring billing; the backend reacts to its webhooks.
   const suspend =
-    eventType === 'payment.failed' || eventType === 'payment_failed' ||
-    eventType === 'membership.went_invalid' || eventType === 'membership_went_invalid';
+    eventType === "payment.failed" ||
+    eventType === "payment_failed" ||
+    eventType === "membership.went_invalid" ||
+    eventType === "membership_went_invalid";
   if (suspend) {
     // Route through the swappable suspension adapter so the client sub-account
     // is paused in GHL and the action is audited. Skip when already suspended
     // to avoid duplicate GHL calls on webhook retries.
-    if (prevStatus !== 'suspended') {
+    if (prevStatus !== "suspended") {
       await suspendClientLocation(locationId, `whop_${eventType}`);
     }
-    return new NextResponse('OK', { status: 200 });
+    return new NextResponse("OK", { status: 200 });
   }
 
   // Activate / renew on success, membership validation, or saved payment method.
-  const isPaid = eventType === 'payment.succeeded' || eventType === 'payment_succeeded';
+  const isPaid =
+    eventType === "payment.succeeded" || eventType === "payment_succeeded";
   const activate =
     isPaid ||
-    eventType === 'membership.went_valid' || eventType === 'membership_went_valid' ||
-    eventType === 'setup_intent.succeeded';
-  if (!activate) return new NextResponse('Ignored', { status: 200 });
+    eventType === "membership.went_valid" ||
+    eventType === "membership_went_valid" ||
+    eventType === "setup_intent.succeeded";
+  if (!activate) return new NextResponse("Ignored", { status: 200 });
 
   const planId = meta.plan_id ? Number(meta.plan_id) : null;
   const amount = meta.pkr_amount ? Number(meta.pkr_amount) : null;
@@ -291,26 +384,27 @@ async function handleAgencySaasWebhook(args: {
   //    keep status 'trial' and set the period/trial window to the trial end.
   //  - Otherwise (a real payment, or a no-trial plan) -> 'active' and advance
   //    one billing cycle from now.
-  const freq = String(meta.frequency || 'monthly').toLowerCase();
-  const isTrialStart = !isPaid && trialDays > 0 && (prevStatus === null || prevStatus === 'trial');
+  const freq = String(meta.frequency || "monthly").toLowerCase();
+  const isTrialStart =
+    !isPaid && trialDays > 0 && (prevStatus === null || prevStatus === "trial");
 
-  let newStatus: 'trial' | 'active';
+  let newStatus: "trial" | "active";
   let periodEnd: Date;
   let trialEndsAt: Date | null;
   if (isTrialStart) {
     const t = new Date();
     t.setDate(t.getDate() + trialDays);
-    newStatus = 'trial';
+    newStatus = "trial";
     periodEnd = t;
     trialEndsAt = t;
   } else {
     const next = new Date();
-    if (freq === 'yearly' || freq === 'annual' || freq === 'annually') {
+    if (freq === "yearly" || freq === "annual" || freq === "annually") {
       next.setFullYear(next.getFullYear() + 1);
     } else {
       next.setMonth(next.getMonth() + 1);
     }
-    newStatus = 'active';
+    newStatus = "active";
     periodEnd = next;
     trialEndsAt = null;
   }
@@ -336,18 +430,33 @@ async function handleAgencySaasWebhook(args: {
        whop_membership_id = COALESCE(VALUES(whop_membership_id), whop_membership_id),
        trial_ends_at = COALESCE(VALUES(trial_ends_at), trial_ends_at),
        last_payment_at = COALESCE(VALUES(last_payment_at), last_payment_at)`,
-    [locationId, planId, newStatus, periodEnd, amount, email, memberId, paymentMethodId, membershipId, trialEndsAt, lastPaymentAt]
+    [
+      locationId,
+      planId,
+      newStatus,
+      periodEnd,
+      amount,
+      email,
+      memberId,
+      paymentMethodId,
+      membershipId,
+      trialEndsAt,
+      lastPaymentAt,
+    ],
   );
 
   // If the sub-account was suspended/past_due, resume it in GHL now that the
   // subscription is active again (adapter + audit). Trial starts don't resume.
-  if (newStatus === 'active' && (prevStatus === 'suspended' || prevStatus === 'past_due')) {
+  if (
+    newStatus === "active" &&
+    (prevStatus === "suspended" || prevStatus === "past_due")
+  ) {
     await resumeClientLocation(locationId, `whop_${eventType}`);
   }
 
-  return new NextResponse('OK', { status: 200 });
+  return new NextResponse("OK", { status: 200 });
 }
 
 export async function GET() {
-  return NextResponse.json({ status: 'ok', provider: 'Whop webhook receiver' });
+  return NextResponse.json({ status: "ok", provider: "Whop webhook receiver" });
 }
