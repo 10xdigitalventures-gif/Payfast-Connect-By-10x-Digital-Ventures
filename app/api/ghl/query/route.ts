@@ -270,11 +270,87 @@ export async function POST(request: NextRequest) {
         `SELECT * FROM installations WHERE location_id = ? LIMIT 1`,
         [locationId]
       );
-      if (!installationRows.length || !installationRows[0].merchant_id || !installationRows[0].merchant_key) {
-        return NextResponse.json({ error: 'GoPayFast is not configured for this location' }, { status: 400 });
+      if (!installationRows.length) {
+        return NextResponse.json({ error: 'Installation not found for this location' }, { status: 400 });
       }
 
       const inst = installationRows[0];
+
+      // ── Whop off-session charge path ──────────────────────────────────────────
+      // When the location's subscription provider is Whop we have a stored
+      // whop_member_id + whop_payment_method_id in location_subscriptions. Use
+      // chargeWhopPaymentMethod() instead of the PayFast tokenised flow.
+      const whopSubRows = await query<any[]>(
+        `SELECT whop_member_id, whop_payment_method_id, whop_membership_id
+           FROM location_subscriptions
+           WHERE location_id = ? AND provider = 'whop'
+             AND whop_payment_method_id IS NOT NULL
+           LIMIT 1`,
+        [locationId]
+      );
+      const whopSub = whopSubRows[0] || null;
+      const useWhop =
+        !!whopSub?.whop_payment_method_id &&
+        !!inst.whop_api_key &&
+        (!inst.merchant_id); // prefer Whop when PayFast is NOT configured
+
+      if (useWhop && whopSub && inst.whop_api_key) {
+        const { chargeWhopPaymentMethod, convertPkrToUsd, resolveExchangeRate } = await import('@/lib/whop');
+        const feePercent = Number(inst.whop_fee_percent ?? 10);
+        const { rate } = await resolveExchangeRate(inst.whop_rate_mode, Number(inst.whop_exchange_rate ?? 280));
+        const usdAmount = convertPkrToUsd(Number(amount), feePercent, rate);
+
+        const whopChargeBasketId = chargeId || `CRM-WHOP-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+        const whopRes = await chargeWhopPaymentMethod({
+          apiKey: inst.whop_api_key,
+          companyId: inst.whop_company_id || '',
+          memberId: whopSub.whop_member_id,
+          paymentMethodId: whopSub.whop_payment_method_id,
+          usdAmount,
+          metadata: {
+            location_id: locationId,
+            ghl_transaction_id: ghlTransactionId || whopChargeBasketId,
+            description: description || 'Off-session charge',
+          },
+        });
+
+        if (!whopRes.ok) {
+          return NextResponse.json(
+            { success: false, failed: true, message: whopRes.error || 'Whop off-session charge failed.' },
+            { status: 400 }
+          );
+        }
+
+        const whopChargeId = whopRes.data?.id || whopChargeBasketId;
+        const chargeSnapshot = {
+          id: whopChargeId,
+          status: 'succeeded',
+          amount: Number(amount),
+          chargeId: whopChargeId,
+          chargedAt: Math.floor(Date.now() / 1000),
+        };
+
+        await query(
+          `INSERT INTO payments
+            (location_id, contact_id, payer_email, amount, item_name, payment_type,
+             provider, status, pf_token, pf_payment_id, custom_str2, custom_str3)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [
+            locationId, contactId || null, email || `${locationId}@crm.local`,
+            Number(amount), description || 'Off-session charge', 'one-time',
+            'whop', 'complete', whopChargeBasketId, whopChargeId, locationId, ghlTransactionId || '',
+          ]
+        );
+
+        return NextResponse.json({ success: true, failed: false, message: 'Charge processed via Whop', chargeSnapshot });
+      }
+
+      // ── PayFast off-session charge path (default) ─────────────────────────────
+      if (!inst.merchant_id || !inst.merchant_key) {
+        return NextResponse.json({ error: 'No payment method available: GoPayFast is not configured and Whop off-session requires a stored payment method.' }, { status: 400 });
+      }
+
       const { selectedMethod } = await resolveSavedMethod();
 
       if (!selectedMethod?.instrument_token) {
@@ -443,6 +519,24 @@ export async function POST(request: NextRequest) {
         nextCharge: toEpoch(nextBilling),
         label: subscriptionLabel,
       };
+
+      // Notify GHL that the subscription is now active (spec §5.3 lifecycle events).
+      // Fire-and-forget: we don't block the response on this.
+      fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/ghl/notify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          locationId,
+          ghlTransactionId: subscriptionId || selectedMethod.instrument_token,
+          chargeId: subscriptionId || selectedMethod.instrument_token,
+          subscriptionId: subscriptionId || selectedMethod.instrument_token,
+          amount,
+          contactId: contactId || null,
+          periodEnd: nextBilling.toISOString(),
+          eventType: 'subscription.active',
+        }),
+      }).catch((e) => console.warn('[create_subscription → notify]', e));
+
       return NextResponse.json({
         success: true,
         failed: false,

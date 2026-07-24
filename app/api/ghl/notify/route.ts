@@ -83,13 +83,36 @@ export async function POST(request: NextRequest) {
   if (contactId)      payload.contactId      = contactId;
   if (subscriptionId) payload.ghlSubscriptionId = subscriptionId;
 
-  // For subscription events
-  if (eventType === 'subscription.charged') {
+  // For subscription events — build the correct subscriptionSnapshot shape.
+  // GHL expects: subscription.trialing, subscription.active, subscription.updated,
+  // subscription.charged (all routed to the same CRM webhook endpoint).
+  if (
+    eventType === 'subscription.charged' ||
+    eventType === 'subscription.trialing' ||
+    eventType === 'subscription.active' ||
+    eventType === 'subscription.updated'
+  ) {
+    const trialEnd = body.trialEndsAt ? Math.floor(new Date(body.trialEndsAt).getTime() / 1000) : 0;
+    const periodEnd = body.periodEnd ? Math.floor(new Date(body.periodEnd).getTime() / 1000) : now + 30 * 24 * 3600;
+    const subStatus =
+      eventType === 'subscription.trialing' ? 'trialing'
+      : eventType === 'subscription.active'  ? 'active'
+      : eventType === 'subscription.updated' ? 'active'
+      : 'active'; // subscription.charged
     payload.subscriptionSnapshot = {
-      status:       'active',
+      id: body.subscriptionId || subscriptionId || '',
+      status: subStatus,
+      trialEnd,
       currentPeriodStart: now,
-      currentPeriodEnd:   now + 30 * 24 * 3600,
+      currentPeriodEnd: periodEnd,
     };
+    if (eventType !== 'subscription.charged') {
+      // For non-charge lifecycle events GHL doesn't need chargeId / chargeSnapshot
+      // but we keep them in case the implementation evolves.
+      delete payload.chargeId;
+      delete payload.chargeSnapshot;
+      payload.ghlSubscriptionId = body.subscriptionId || subscriptionId || '';
+    }
   }
 
   try {

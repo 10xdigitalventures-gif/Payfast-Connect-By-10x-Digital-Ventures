@@ -113,6 +113,10 @@ export async function POST(request: NextRequest) {
     ]
   );
 
+  // After checkout the GHL iframe expects a postMessage('payment-success') from
+  // the child window. We redirect to our own success page which fires that message.
+  const whopSuccessRedirect = `${appUrl}/checkout/success?location_id=${encodeURIComponent(locationId)}&basket_id=${encodeURIComponent(basketId)}`;
+
   const result = await createWhopCheckout({
     config: {
       apiKey: inst.whop_api_key!,
@@ -123,6 +127,7 @@ export async function POST(request: NextRequest) {
     usdAmount,
     planType,
     billingPeriodDays,
+    redirectUrl: whopSuccessRedirect,
     metadata: {
       basketId,
       woo_order_id: basketId, // back-compat key name from the WooCommerce plugin

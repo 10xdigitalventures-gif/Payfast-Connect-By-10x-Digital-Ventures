@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { query } from './db';
 
 // ─────────────────────────────────────────────────────────────
 // Whop payment helper for the GoHighLevel custom-provider app.
@@ -87,6 +88,12 @@ export interface CreateCheckoutParams {
   planType?: 'one_time' | 'renewal';
   /** Billing interval in days for renewal plans (e.g. 30 = monthly). */
   billingPeriodDays?: number | null;
+  /** Reference an existing Whop plan instead of minting a new inline plan. */
+  existingPlanId?: string | null;
+  /** Optional URL to redirect the customer to after checkout completes. */
+  redirectUrl?: string | null;
+  /** Whop-managed free trial length in days (renewal plans). 0/undefined = none. */
+  trialPeriodDays?: number | null;
 }
 
 export interface WhopCheckoutResult {
@@ -94,6 +101,8 @@ export interface WhopCheckoutResult {
   planId?: string;
   checkoutId?: string;
   checkoutUrl?: string;
+  /** Session-scoped purchase URL (/checkout/plan_xxx?session=..) when returned. */
+  purchaseUrl?: string;
   status?: number;
   raw?: string;
   error?: string;
@@ -104,22 +113,44 @@ export interface WhopCheckoutResult {
  * Matches the request shape used by the WooCommerce gateway: currency at the
  * top level, plan details (incl. company_id) nested under `plan`.
  */
+function toAbsoluteWhopUrl(u: unknown): string {
+  const s = typeof u === 'string' ? u.trim() : '';
+  if (!s) return '';
+  if (/^https?:\/\//i.test(s)) return s;
+  const origin = WHOP_CHECKOUT_BASE.replace(/\/checkout$/, "");
+  return `${origin}${s.startsWith("/") ? "" : "/"}${s}`;
+}
+
 export async function createWhopCheckout(params: CreateCheckoutParams): Promise<WhopCheckoutResult> {
   const { config, usdAmount, metadata } = params;
   const planType = params.planType === 'renewal' ? 'renewal' : 'one_time';
 
-  // Inline plan for the checkout configuration. For subscriptions we send a
-  // renewal plan with a billing_period (days) so Whop runs the recurring
-  // billing and emits a payment.succeeded webhook every cycle.
-  const plan: Record<string, unknown> = {
-    initial_price: usdAmount, // dollars, e.g. 17.86
-    plan_type: planType,
-    company_id: config.companyId,
-    currency: 'usd',
-  };
-  if (planType === 'renewal' && params.billingPeriodDays && params.billingPeriodDays > 0) {
-    plan.billing_period = Math.round(params.billingPeriodDays);
+  // Two modes:
+  //  - existingPlanId set -> reference a stable plan (one plan per GHL plan).
+  //  - otherwise          -> inline plan (mints a new Whop plan).
+  // Either way a fresh checkout configuration is created so the resulting
+  // membership/payment inherits this checkout session's per-customer metadata.
+  let requestBody: Record<string, unknown>;
+  if (params.existingPlanId) {
+    requestBody = { plan_id: params.existingPlanId, metadata };
+  } else {
+    const plan: Record<string, unknown> = {
+      initial_price: usdAmount, // dollars, e.g. 17.86
+      plan_type: planType,
+      company_id: config.companyId,
+      currency: 'usd',
+    };
+    if (planType === 'renewal' && params.billingPeriodDays && params.billingPeriodDays > 0) {
+      plan.billing_period = Math.round(params.billingPeriodDays);
+    }
+    // Whop-managed trial: membership goes valid immediately and the first
+    // charge is deferred until the trial ends (Model 1 keeps Whop in charge).
+    if (planType === 'renewal' && params.trialPeriodDays && params.trialPeriodDays > 0) {
+      plan.trial_period_days = Math.round(params.trialPeriodDays);
+    }
+    requestBody = { currency: 'usd', plan, metadata };
   }
+  if (params.redirectUrl) requestBody.redirect_url = params.redirectUrl;
 
   try {
     const res = await fetch(`${WHOP_API_BASE}/checkout_configurations`, {
@@ -128,11 +159,7 @@ export async function createWhopCheckout(params: CreateCheckoutParams): Promise<
         Authorization: `Bearer ${config.apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        currency: 'usd',
-        plan,
-        metadata,
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     const raw = await res.text();
@@ -147,14 +174,20 @@ export async function createWhopCheckout(params: CreateCheckoutParams): Promise<
     let planId = '';
     if (body?.plan?.id) planId = body.plan.id;
     else if (body?.plan_id) planId = body.plan_id;
+    else if (params.existingPlanId) planId = params.existingPlanId;
 
-    if (res.ok && planId) {
+    // Prefer the session-scoped purchase_url ("/checkout/plan_xxx?session=..")
+    // because the membership/payment inherits that session's metadata.
+    const purchaseUrl = toAbsoluteWhopUrl(body?.purchase_url);
+
+    if (res.ok && (planId || purchaseUrl)) {
       const checkoutId = body?.id || planId;
       return {
         ok: true,
         planId,
         checkoutId,
-        checkoutUrl: `${WHOP_CHECKOUT_BASE}/${planId}`,
+        purchaseUrl: purchaseUrl || undefined,
+        checkoutUrl: purchaseUrl || (planId ? `${WHOP_CHECKOUT_BASE}/${planId}` : undefined),
         status: res.status,
         raw,
       };
@@ -169,6 +202,63 @@ export async function createWhopCheckout(params: CreateCheckoutParams): Promise<
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+// ───────────────────────────────────────────────────────
+// Whop plan ↔ GHL SaaS plan mapping (one Whop plan per GHL plan, per agency
+// Whop account). Lets subscribe reuse a stable plan when the USD price is
+// unchanged instead of minting a new plan on every checkout.
+// ───────────────────────────────────────────────────────
+
+export interface MappedWhopPlan {
+  whop_plan_id: string;
+  usd_amount: number;
+  billing_period_days: number | null;
+  trial_period_days: number | null;
+}
+
+export async function getMappedWhopPlan(
+  agencyPlanId: number,
+  frequency: string,
+  whopCompanyId: string
+): Promise<MappedWhopPlan | null> {
+  const rows = await query<any[]>(
+    `SELECT whop_plan_id, usd_amount, billing_period_days, trial_period_days
+     FROM plan_whop_map
+     WHERE agency_plan_id = ? AND frequency = ? AND whop_company_id = ?
+     LIMIT 1`,
+    [agencyPlanId, frequency, whopCompanyId]
+  );
+  if (!rows.length || !rows[0].whop_plan_id) return null;
+  return {
+    whop_plan_id: rows[0].whop_plan_id,
+    usd_amount: Number(rows[0].usd_amount),
+    billing_period_days: rows[0].billing_period_days != null ? Number(rows[0].billing_period_days) : null,
+    trial_period_days: rows[0].trial_period_days != null ? Number(rows[0].trial_period_days) : null,
+  };
+}
+
+export async function upsertWhopPlanMap(args: {
+  agencyPlanId: number;
+  frequency: string;
+  whopCompanyId: string;
+  whopPlanId: string;
+  usdAmount: number;
+  billingPeriodDays: number | null;
+  trialPeriodDays?: number | null;
+}): Promise<void> {
+  await query(
+    `INSERT INTO plan_whop_map
+       (agency_plan_id, frequency, whop_company_id, whop_plan_id, usd_amount, billing_period_days, trial_period_days)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       whop_plan_id = VALUES(whop_plan_id),
+       usd_amount = VALUES(usd_amount),
+       billing_period_days = VALUES(billing_period_days),
+       trial_period_days = VALUES(trial_period_days),
+       updated_at = CURRENT_TIMESTAMP`,
+    [args.agencyPlanId, args.frequency, args.whopCompanyId, args.whopPlanId, args.usdAmount, args.billingPeriodDays, args.trialPeriodDays ?? null]
+  );
 }
 
 export interface WhopSignatureInput {

@@ -103,3 +103,17 @@ export async function suspendLocation(locationId: string) {
 export async function reactivateLocation(locationId: string) {
   await query(`UPDATE location_subscriptions SET status = 'active' WHERE location_id = ?`, [locationId]);
 }
+
+// Returns active plans for a given Whop company (multi-tenant).
+// Falls back to global plans (company_id IS NULL) when no company-scoped plans exist.
+export async function getPlansForCompany(whopCompanyId?: string | null) {
+  const rows = await query<any[]>(
+    `SELECT id, name, slug, price_monthly, price_yearly, max_locations, features, trial_days
+     FROM agency_plans
+     WHERE is_active = 1
+       AND (company_id = ? OR company_id IS NULL)
+     ORDER BY price_monthly ASC`,
+    [whopCompanyId || null]
+  );
+  return rows;
+}

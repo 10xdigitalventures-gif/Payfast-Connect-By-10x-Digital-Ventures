@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from 'react';
 import AgencyControls from './AgencyControls';
-import Link from 'next/link';
+import SuspensionPanel from './SuspensionPanel';
+import RebillingMonitor from './RebillingMonitor';
 import type { WalletBalance } from '@/lib/wallet';
 import type { PaymentInstrument } from '@/lib/payment-instruments';
 
@@ -11,6 +12,7 @@ type Stats = {
   active_count: number;
   trial_count: number;
   suspended_count: number;
+  past_due_count: number;
 };
 
 type InvoiceRow = {
@@ -78,7 +80,7 @@ export default function AgencyDashboardClient({
   agencySettings: AgencySettings | null;
   subaccounts: SubaccountRow[];
 }) {
-  const [tab, setTab] = useState<'summary' | 'subaccounts' | 'payments' | 'wallet' | 'notifications' | 'controls'>('summary');
+  const [tab, setTab] = useState<'summary' | 'subaccounts' | 'payments' | 'wallet' | 'notifications' | 'suspension' | 'cron' | 'controls'>('summary');
   const [selectedLocationId, setSelectedLocationId] = useState(sessionLocationId);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
@@ -88,6 +90,7 @@ export default function AgencyDashboardClient({
       { label: 'Active Clients', value: stats.active_count || 0, tone: 'green' },
       { label: 'Trials', value: stats.trial_count || 0, tone: 'amber' },
       { label: 'Suspended', value: stats.suspended_count || 0, tone: 'red' },
+      { label: 'Past Due', value: stats.past_due_count || 0, tone: 'orange' },
     ],
     [stats]
   );
@@ -98,6 +101,8 @@ export default function AgencyDashboardClient({
     { id: 'payments', label: 'Payments' },
     { id: 'wallet', label: 'Wallet & Transactions' },
     { id: 'notifications', label: 'Notifications' },
+    { id: 'suspension', label: 'Suspension' },
+    { id: 'cron', label: 'Cron Monitor' },
     { id: 'controls', label: 'Controls' },
   ] as const;
 
@@ -504,6 +509,14 @@ export default function AgencyDashboardClient({
               </div>
             </div>
           </div>
+        )}
+
+        {tab === 'suspension' && (
+          <SuspensionPanel />
+        )}
+
+        {tab === 'cron' && (
+          <RebillingMonitor />
         )}
 
         {tab === 'controls' && (

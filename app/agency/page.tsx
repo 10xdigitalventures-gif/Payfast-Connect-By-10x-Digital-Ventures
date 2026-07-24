@@ -63,11 +63,12 @@ export default async function AgencyPage({ searchParams }: { searchParams?: Prom
   const stats = await query<any[]>(
     `SELECT
        COALESCE(SUM(CASE WHEN status = 'active' THEN amount ELSE 0 END),0) AS mrr,
-       SUM(status = 'active') AS active_count,
-       SUM(status = 'trial') AS trial_count,
-       SUM(status = 'suspended') AS suspended_count
+       SUM(status = 'active')   AS active_count,
+       SUM(status = 'trial')    AS trial_count,
+       SUM(status = 'suspended') AS suspended_count,
+       SUM(status = 'past_due') AS past_due_count
      FROM location_subscriptions`
   );
 
-  return <AgencyDashboardClient stats={stats[0] || { mrr: 0, active_count: 0, trial_count: 0, suspended_count: 0 }} sessionLocationId={session.locationId} installed={installed} restored={restored} payfastReady={payfastReady} wallet={wallet} instruments={instruments} invoices={invoices} agencySettings={agencySettings} subaccounts={subaccounts} />;
+  return <AgencyDashboardClient stats={stats[0] || { mrr: 0, active_count: 0, trial_count: 0, suspended_count: 0, past_due_count: 0 }} sessionLocationId={session.locationId} installed={installed} restored={restored} payfastReady={payfastReady} wallet={wallet} instruments={instruments} invoices={invoices} agencySettings={agencySettings} subaccounts={subaccounts} />;
 }

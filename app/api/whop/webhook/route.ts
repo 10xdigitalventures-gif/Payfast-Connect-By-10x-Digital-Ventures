@@ -3,6 +3,7 @@ import { query, Installation } from '@/lib/db';
 import { verifyWhopSignature } from '@/lib/whop';
 import { getAgencySettings } from '@/lib/billing';
 import { handlePaymentSync } from '@/lib/ghl';
+import { suspendClientLocation, resumeClientLocation } from '@/lib/suspension';
 
 // Whop -> our app webhook (Standard Webhooks signed).
 // Mirrors the PayFast ITN success path: verify signature, mark the payment
@@ -72,6 +73,52 @@ export async function POST(request: NextRequest) {
     return new NextResponse('OK', { status: 200 });
   }
 
+  // ── Invoice paid: mark the matching invoice in our DB and sync GHL ────────
+  // Whop fires invoice.paid when an invoice (created via the Invoices API) is
+  // settled. We reflect the payment into billing_invoices and notify GHL so
+  // the CRM invoice shows as paid.
+  if (eventType === 'invoice.paid' || eventType === 'invoice_paid') {
+    const inv = data?.data || {};
+    const whopInvId = inv.id || '';
+    const whopPaymentId = inv.payment?.id || inv.payment_id || whopInvId;
+    const invEmail = inv.email_address || '';
+    const invAmount = inv.current_plan?.price ?? inv.amount ?? 0;
+
+    if (whopInvId) {
+      await query(
+        `UPDATE billing_invoices
+           SET status = 'paid', paid_at = NOW(), payment_id = ?
+           WHERE whop_invoice_id = ? AND location_id = ?`,
+        [String(whopPaymentId), String(whopInvId), locationId]
+      ).catch(() => {}); // table may not have whop_invoice_id yet — non-fatal
+    }
+
+    // Best-effort GHL notify. The GHL transaction id travels in the checkout
+    // metadata (meta.ghl_transaction_id) — the `payment` DB row is only fetched
+    // later in this handler, so we read it from metadata here.
+    const invGhlTxnId = meta.ghl_transaction_id || '';
+    if (invGhlTxnId) {
+      fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/ghl/notify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          locationId,
+          ghlTransactionId: invGhlTxnId,
+          chargeId: String(whopPaymentId),
+          amount: invAmount,
+          eventType: 'payment.captured',
+        }),
+      }).catch(() => {});
+    }
+    return new NextResponse('OK', { status: 200 });
+  }
+
+  // invoice.created / invoice.updated — acknowledge without state changes.
+  if (eventType === 'invoice.created' || eventType === 'invoice_created' ||
+      eventType === 'invoice.updated' || eventType === 'invoice_updated') {
+    return new NextResponse('OK', { status: 200 });
+  }
+
   // Best-effort: reflect Whop-side refunds back into our records.
   if (eventType === 'refund.created' || eventType === 'refund_created') {
     const refundedWhopId = data?.data?.payment?.id || data?.data?.payment_id || data?.data?.id || '';
@@ -87,7 +134,10 @@ export async function POST(request: NextRequest) {
 
   // Only act on successful payments beyond this point.
   const isSuccess = eventType === 'payment.succeeded' || eventType === 'payment_succeeded';
-  if (!isSuccess) {
+  // membership.renewed = Whop confirms a recurring cycle renewed successfully.
+  // Treat it like payment.succeeded for idempotent re-activation.
+  const isMembershipRenewed = eventType === 'membership.renewed' || eventType === 'membership_renewed';
+  if (!isSuccess && !isMembershipRenewed) {
     return new NextResponse('Ignored', { status: 200 });
   }
 
@@ -201,53 +251,99 @@ async function handleAgencySaasWebhook(args: {
   const paymentMethodId = d.payment_method_id || d.payment_method?.id || null;
   const membershipId = d.membership_id || d.membership?.id || null;
 
-  // Suspend on failed payment or membership going invalid.
+  // Look up prior state so we only fire GHL transitions on real changes.
+  const prevRows = await query<any[]>(
+    `SELECT status FROM location_subscriptions WHERE location_id = ? LIMIT 1`,
+    [locationId]
+  );
+  const prevStatus = prevRows?.[0]?.status || null;
+
+  // ── Suspend on failed payment or membership going invalid (Model 1) ──
+  // Model 1 = Whop owns recurring billing; the backend reacts to its webhooks.
   const suspend =
     eventType === 'payment.failed' || eventType === 'payment_failed' ||
     eventType === 'membership.went_invalid' || eventType === 'membership_went_invalid';
   if (suspend) {
-    await query(`UPDATE location_subscriptions SET status = 'suspended' WHERE location_id = ?`, [locationId]);
+    // Route through the swappable suspension adapter so the client sub-account
+    // is paused in GHL and the action is audited. Skip when already suspended
+    // to avoid duplicate GHL calls on webhook retries.
+    if (prevStatus !== 'suspended') {
+      await suspendClientLocation(locationId, `whop_${eventType}`);
+    }
     return new NextResponse('OK', { status: 200 });
   }
 
   // Activate / renew on success, membership validation, or saved payment method.
+  const isPaid = eventType === 'payment.succeeded' || eventType === 'payment_succeeded';
   const activate =
-    eventType === 'payment.succeeded' || eventType === 'payment_succeeded' ||
+    isPaid ||
     eventType === 'membership.went_valid' || eventType === 'membership_went_valid' ||
     eventType === 'setup_intent.succeeded';
   if (!activate) return new NextResponse('Ignored', { status: 200 });
 
-  // Advance one billing cycle from now.
-  const freq = String(meta.frequency || 'monthly').toLowerCase();
-  const next = new Date();
-  if (freq === 'yearly' || freq === 'annual' || freq === 'annually') {
-    next.setFullYear(next.getFullYear() + 1);
-  } else {
-    next.setMonth(next.getMonth() + 1);
-  }
-
   const planId = meta.plan_id ? Number(meta.plan_id) : null;
   const amount = meta.pkr_amount ? Number(meta.pkr_amount) : null;
   const email = meta.customer_email || null;
+  const trialDays = meta.trial_days ? Number(meta.trial_days) : 0;
+
+  // Decide status + period window:
+  //  - Whop-managed trial started (membership valid but not yet charged) ->
+  //    keep status 'trial' and set the period/trial window to the trial end.
+  //  - Otherwise (a real payment, or a no-trial plan) -> 'active' and advance
+  //    one billing cycle from now.
+  const freq = String(meta.frequency || 'monthly').toLowerCase();
+  const isTrialStart = !isPaid && trialDays > 0 && (prevStatus === null || prevStatus === 'trial');
+
+  let newStatus: 'trial' | 'active';
+  let periodEnd: Date;
+  let trialEndsAt: Date | null;
+  if (isTrialStart) {
+    const t = new Date();
+    t.setDate(t.getDate() + trialDays);
+    newStatus = 'trial';
+    periodEnd = t;
+    trialEndsAt = t;
+  } else {
+    const next = new Date();
+    if (freq === 'yearly' || freq === 'annual' || freq === 'annually') {
+      next.setFullYear(next.getFullYear() + 1);
+    } else {
+      next.setMonth(next.getMonth() + 1);
+    }
+    newStatus = 'active';
+    periodEnd = next;
+    trialEndsAt = null;
+  }
+  const lastPaymentAt = isPaid ? new Date() : null;
 
   await query(
     `INSERT INTO location_subscriptions
       (location_id, plan_id, provider, status, current_period_start, current_period_end,
-       amount, payer_email, whop_member_id, whop_payment_method_id, whop_membership_id)
-     VALUES (?, ?, 'whop', 'active', NOW(), ?, ?, ?, ?, ?, ?)
+       amount, payer_email, whop_member_id, whop_payment_method_id, whop_membership_id,
+       trial_ends_at, last_payment_at)
+     VALUES (?, ?, 'whop', ?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
        plan_id = COALESCE(VALUES(plan_id), plan_id),
        provider = 'whop',
-       status = 'active',
+       status = VALUES(status),
+       grace_until = NULL,
        current_period_start = NOW(),
        current_period_end = VALUES(current_period_end),
        amount = COALESCE(VALUES(amount), amount),
        payer_email = COALESCE(VALUES(payer_email), payer_email),
        whop_member_id = COALESCE(VALUES(whop_member_id), whop_member_id),
        whop_payment_method_id = COALESCE(VALUES(whop_payment_method_id), whop_payment_method_id),
-       whop_membership_id = COALESCE(VALUES(whop_membership_id), whop_membership_id)`,
-    [locationId, planId, next, amount, email, memberId, paymentMethodId, membershipId]
+       whop_membership_id = COALESCE(VALUES(whop_membership_id), whop_membership_id),
+       trial_ends_at = COALESCE(VALUES(trial_ends_at), trial_ends_at),
+       last_payment_at = COALESCE(VALUES(last_payment_at), last_payment_at)`,
+    [locationId, planId, newStatus, periodEnd, amount, email, memberId, paymentMethodId, membershipId, trialEndsAt, lastPaymentAt]
   );
+
+  // If the sub-account was suspended/past_due, resume it in GHL now that the
+  // subscription is active again (adapter + audit). Trial starts don't resume.
+  if (newStatus === 'active' && (prevStatus === 'suspended' || prevStatus === 'past_due')) {
+    await resumeClientLocation(locationId, `whop_${eventType}`);
+  }
 
   return new NextResponse('OK', { status: 200 });
 }
