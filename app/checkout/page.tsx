@@ -26,8 +26,9 @@ interface GHLPaymentData {
   subscriptionId?: string;
   transactionId: string;
   description?: string;
-  mode?: "payment" | "setup";
-  productDetails?: { productId?: string; priceId?: string };
+  mode?: "payment" | "setup" | "subscription";
+  isRecurring?: boolean;
+  productDetails?: any[];
   contact?: {
     id?: string;
     name: string;
@@ -321,6 +322,17 @@ export default function CheckoutPage() {
           (d.locationId || d.transactionId || d.orderId || d.invoiceId));
 
       if (isPaymentInit) {
+        const isRecurring =
+          !!d.subscriptionId ||
+          d.mode === "subscription" ||
+          d.isRecurring === true ||
+          !!d.recurring ||
+          (Array.isArray(d.productDetails) &&
+            d.productDetails.some(
+              (item: any) =>
+                item?.recurring ||
+                item?.prices?.some((price: any) => price?.type === "recurring"),
+            ));
         const incoming: GHLPaymentData = {
           amount: isSetupInit ? 0 : Number(amountNum),
           currency: d.currency || "PKR",
@@ -332,12 +344,13 @@ export default function CheckoutPage() {
           transactionId: d.transactionId || d.ghlTransactionId || "",
           description: d.description,
           mode: d.mode,
+          isRecurring,
           productDetails: d.productDetails,
           contact: d.contact,
         };
         setPayData(incoming);
         payDataRef.current = incoming;
-        if (isSetupInit) setMethod("whop");
+        if (isSetupInit || isRecurring) setMethod("whop");
         setWaitingForGhl(false);
         if (incoming.contact) {
           setForm({
@@ -457,7 +470,7 @@ export default function CheckoutPage() {
           oneoff: route.oneoff === "whop" ? "whop" : "payfast",
           subscription: route.subscription === "payfast" ? "payfast" : "whop",
         });
-        const isSub = !!payDataRef.current?.subscriptionId;
+        const isSub = !!payDataRef.current?.isRecurring;
         const preferred: "payfast" | "whop" = isSub
           ? route.subscription === "payfast"
             ? "payfast"
@@ -487,7 +500,7 @@ export default function CheckoutPage() {
     return () => {
       cancelled = true;
     };
-  }, [payData?.locationId]);
+  }, [payData?.locationId, payData?.isRecurring]);
 
   async function pollOnce() {
     if (finishedRef.current) return;
@@ -601,6 +614,8 @@ export default function CheckoutPage() {
             invoiceId: payData.invoiceId,
             orderId: payData.orderId,
             subscriptionId: payData.subscriptionId,
+            isRecurring: !!payData.isRecurring,
+            mode: payData.isRecurring ? "subscription" : payData.mode,
             frequency:
               (payData as any).recurring?.interval ||
               (payData as any).frequency ||
@@ -651,7 +666,7 @@ export default function CheckoutPage() {
           nameLast: form.name.split(" ").slice(1).join(" ") || ".",
           email: form.email,
           phone: form.phone,
-          isRecurring: !!payData.subscriptionId,
+          isRecurring: !!payData.isRecurring,
         }),
       });
 
@@ -988,9 +1003,7 @@ export default function CheckoutPage() {
             {payData.mode === "setup"
               ? "Save payment method"
               : payData.description ||
-                (payData.subscriptionId
-                  ? "Subscription Payment"
-                  : "Amount Due")}
+                (payData.isRecurring ? "Subscription Payment" : "Amount Due")}
           </div>
           {payData.mode !== "setup" && (
             <div
@@ -1007,36 +1020,39 @@ export default function CheckoutPage() {
               })}
             </div>
           )}
-          {payData.subscriptionId && (
+          {payData.isRecurring && (
             <div style={{ fontSize: 11, color: "#94A3B8", marginTop: 6 }}>
               Recurring subscription · Auto-charged
             </div>
           )}
         </div>
 
-        {payData.mode !== "setup" && providers.payfast && providers.whop && (
-          <div style={methodCard}>
-            <div style={methodLabel}>Payment Method</div>
-            <div style={methodGrid}>
-              <button
-                type="button"
-                onClick={() => setMethod("payfast")}
-                style={methodBtn(method === "payfast")}
-              >
-                <span style={methodName}>GoPayFast</span>
-                <span style={methodHint}>Cards &amp; bank · PKR</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setMethod("whop")}
-                style={methodBtn(method === "whop")}
-              >
-                <span style={methodName}>Whop</span>
-                <span style={methodHint}>Card, BNPL &amp; crypto</span>
-              </button>
+        {payData.mode !== "setup" &&
+          !payData.isRecurring &&
+          providers.payfast &&
+          providers.whop && (
+            <div style={methodCard}>
+              <div style={methodLabel}>Payment Method</div>
+              <div style={methodGrid}>
+                <button
+                  type="button"
+                  onClick={() => setMethod("payfast")}
+                  style={methodBtn(method === "payfast")}
+                >
+                  <span style={methodName}>GoPayFast</span>
+                  <span style={methodHint}>Cards &amp; bank · PKR</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMethod("whop")}
+                  style={methodBtn(method === "whop")}
+                >
+                  <span style={methodName}>Whop</span>
+                  <span style={methodHint}>Card, BNPL &amp; crypto</span>
+                </button>
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
         <div
           style={{

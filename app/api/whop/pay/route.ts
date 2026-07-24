@@ -1,7 +1,13 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { query, Installation } from '@/lib/db';
-import { generateToken } from '@/lib/tokens';
-import { convertPkrToUsd, calculateFeePkr, createWhopCheckout, resolveExchangeRate, billingPeriodDaysForFrequency } from '@/lib/whop';
+import { NextRequest, NextResponse } from "next/server";
+import { query, Installation } from "@/lib/db";
+import { generateToken } from "@/lib/tokens";
+import {
+  convertPkrToUsd,
+  calculateFeePkr,
+  createWhopCheckout,
+  resolveExchangeRate,
+  billingPeriodDaysForFrequency,
+} from "@/lib/whop";
 
 // Whop counterpart of /api/ghl/pay.
 // Creates a Whop hosted checkout and a pending payment row that the checkout
@@ -24,18 +30,25 @@ export async function POST(request: NextRequest) {
   } = body;
 
   if (!locationId || !amount || !email) {
-    return NextResponse.json({ error: 'locationId, amount, email required' }, { status: 400 });
+    return NextResponse.json(
+      { error: "locationId, amount, email required" },
+      { status: 400 },
+    );
   }
 
   const rows = await query<Installation[]>(
-    'SELECT * FROM installations WHERE location_id = ?',
-    [locationId]
+    "SELECT * FROM installations WHERE location_id = ?",
+    [locationId],
   );
 
   if (!rows.length || !rows[0].whop_api_key || !rows[0].whop_company_id) {
-    return NextResponse.json({
-      error: 'Whop is not configured for this location. Go to Settings → Whop and add your API key and Company ID.',
-    }, { status: 400 });
+    return NextResponse.json(
+      {
+        error:
+          "Whop is not configured for this location. Go to Settings → Whop and add your API key and Company ID.",
+      },
+      { status: 400 },
+    );
   }
 
   const inst = rows[0];
@@ -49,11 +62,13 @@ export async function POST(request: NextRequest) {
   // in USD we charge that amount plus the gateway fee directly; otherwise we
   // convert PKR→USD using the configured (or live) exchange rate. The stored
   // whop_currency default only applies when GHL doesn't send a currency.
-  const productCurrency = String(body.currency || (inst as any).whop_currency || 'PKR').toUpperCase();
-  const isUsdProduct = productCurrency === 'USD';
+  const productCurrency = String(
+    body.currency || (inst as any).whop_currency || "PKR",
+  ).toUpperCase();
+  const isUsdProduct = productCurrency === "USD";
 
   let rate = 1;
-  let rateSource: 'live' | 'fixed' = 'fixed';
+  let rateSource: "live" | "fixed" = "fixed";
   let usdAmount: number;
   if (isUsdProduct) {
     // Already USD — apply only the gateway fee (exchange rate of 1).
@@ -68,10 +83,21 @@ export async function POST(request: NextRequest) {
 
   // Subscription vs one-time. Subscriptions become Whop renewal plans so Whop
   // runs the recurring billing and emits a payment.succeeded webhook per cycle.
-  const frequency = String(body.frequency || body.interval || body.billingCycle || '');
-  const isSubscription = !!subscriptionId;
-  const planType: 'one_time' | 'renewal' = isSubscription ? 'renewal' : 'one_time';
-  const billingPeriodDays = isSubscription ? billingPeriodDaysForFrequency(frequency) : null;
+  const frequency = String(
+    body.frequency || body.interval || body.billingCycle || "",
+  );
+  // HighLevel recurring invoices may carry a recurring product/mode without a
+  // subscriptionId on the initial checkout. Treat either form as a renewal.
+  const isSubscription =
+    !!subscriptionId ||
+    body.isRecurring === true ||
+    body.mode === "subscription";
+  const planType: "one_time" | "renewal" = isSubscription
+    ? "renewal"
+    : "one_time";
+  const billingPeriodDays = isSubscription
+    ? billingPeriodDaysForFrequency(frequency)
+    : null;
 
   const payToken = generateToken(16);
   const basketId = `WHOP-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -85,10 +111,13 @@ export async function POST(request: NextRequest) {
        pf_token, custom_str1, custom_str2, custom_str3)
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
-      locationId, contactId || null, email,
-      nameFirst || '', nameLast || '.',
+      locationId,
+      contactId || null,
+      email,
+      nameFirst || "",
+      nameLast || ".",
       pkrTotal,
-      description || 'CRM Payment',
+      description || "CRM Payment",
       JSON.stringify({
         invoiceId: invoiceId || null,
         orderId: orderId || null,
@@ -103,14 +132,14 @@ export async function POST(request: NextRequest) {
         billingPeriodDays,
         frequency: frequency || null,
       }),
-      subscriptionId ? 'subscription' : 'one-time',
-      'whop',
-      'pending',
+      isSubscription ? "subscription" : "one-time",
+      "whop",
+      "pending",
       basketId,
-      payToken,        // custom_str1 = our token
-      locationId,      // custom_str2 = locationId
+      payToken, // custom_str1 = our token
+      locationId, // custom_str2 = locationId
       ghlTransactionId, // custom_str3 = CRM transaction ID
-    ]
+    ],
   );
 
   // After checkout the GHL iframe expects a postMessage('payment-success') from
@@ -132,12 +161,13 @@ export async function POST(request: NextRequest) {
       basketId,
       woo_order_id: basketId, // back-compat key name from the WooCommerce plugin
       location_id: locationId,
-      ghl_transaction_id: ghlTransactionId || '',
+      ghl_transaction_id: ghlTransactionId || "",
       customer_email: email,
       pkr_total: String(pkrTotal),
       usd_charged: String(usdAmount),
       plan_type: planType,
-      billing_period_days: billingPeriodDays != null ? String(billingPeriodDays) : '',
+      billing_period_days:
+        billingPeriodDays != null ? String(billingPeriodDays) : "",
       app_url: appUrl,
     },
   });
@@ -145,20 +175,31 @@ export async function POST(request: NextRequest) {
   if (!result.ok || !result.checkoutUrl) {
     await query(
       `UPDATE payments SET status = 'failed', raw_itn = ? WHERE pf_token = ? AND location_id = ?`,
-      [JSON.stringify({ error: result.error, status: result.status, raw: result.raw }), basketId, locationId]
+      [
+        JSON.stringify({
+          error: result.error,
+          status: result.status,
+          raw: result.raw,
+        }),
+        basketId,
+        locationId,
+      ],
     );
-    return NextResponse.json({
-      error: result.error || 'Could not create Whop checkout.',
-    }, { status: 502 });
+    return NextResponse.json(
+      {
+        error: result.error || "Could not create Whop checkout.",
+      },
+      { status: 502 },
+    );
   }
 
   await query(
     `UPDATE payments SET whop_checkout_id = ?, whop_plan_id = ? WHERE pf_token = ? AND location_id = ?`,
-    [result.checkoutId || null, result.planId || null, basketId, locationId]
+    [result.checkoutId || null, result.planId || null, basketId, locationId],
   );
 
   return NextResponse.json({
-    provider: 'whop',
+    provider: "whop",
     redirectUrl: result.checkoutUrl,
     payToken,
     basketId,
