@@ -95,8 +95,12 @@ export async function POST(request: NextRequest) {
   const planType: "one_time" | "renewal" = isSubscription
     ? "renewal"
     : "one_time";
+  const intervalCount = Math.max(
+    1,
+    Number(body.intervalCount || body.recurringIntervalCount || 1),
+  );
   const billingPeriodDays = isSubscription
-    ? billingPeriodDaysForFrequency(frequency)
+    ? billingPeriodDaysForFrequency(frequency) * intervalCount
     : null;
 
   const payToken = generateToken(16);
@@ -131,6 +135,8 @@ export async function POST(request: NextRequest) {
         planType,
         billingPeriodDays,
         frequency: frequency || null,
+        intervalCount,
+        ghlSubscriptionId: subscriptionId || null,
       }),
       isSubscription ? "subscription" : "one-time",
       "whop",
@@ -162,6 +168,8 @@ export async function POST(request: NextRequest) {
       woo_order_id: basketId, // back-compat key name from the WooCommerce plugin
       location_id: locationId,
       ghl_transaction_id: ghlTransactionId || "",
+      ghl_subscription_id: subscriptionId || "",
+      contact_id: contactId || "",
       customer_email: email,
       pkr_total: String(pkrTotal),
       usd_charged: String(usdAmount),

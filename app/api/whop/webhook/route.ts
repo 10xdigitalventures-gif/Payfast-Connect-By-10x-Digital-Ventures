@@ -90,6 +90,10 @@ export async function POST(request: NextRequest) {
 
     const card = paymentMethod.card || {};
     await savePaymentInstrument(locationId, {
+      contactId: String(meta.contact_id || ""),
+      provider: "whop",
+      providerCustomerId: member.id ? String(member.id) : null,
+      providerPaymentMethodId: paymentMethodId,
       instrumentToken: paymentMethodId,
       instrumentAlias: card.brand || "Whop card",
       cardLastFour: card.last4 || card.last_four || null,
@@ -231,6 +235,36 @@ export async function POST(request: NextRequest) {
     [whopPaymentId, whopMembershipId, JSON.stringify(data), payment.id],
   );
 
+  // Persist a durable HighLevel ↔ Whop mapping before answering the webhook.
+  // verify uses this row to return the correct subscription snapshot.
+  if (payment.payment_type === "subscription") {
+    const days = Math.max(1, Number(metadata?.billingPeriodDays || 30));
+    const nextCharge = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+    await query(
+      `INSERT INTO ghl_provider_subscriptions
+        (location_id, contact_id, ghl_subscription_id, ghl_transaction_id, provider,
+         provider_membership_id, provider_plan_id, payment_id, currency, amount,
+         interval_unit, interval_count, next_charge_at, status)
+       VALUES (?, ?, ?, ?, 'whop', ?, ?, ?, ?, ?, 'day', ?, ?, 'active')
+       ON DUPLICATE KEY UPDATE provider_membership_id = COALESCE(VALUES(provider_membership_id), provider_membership_id),
+         provider_plan_id = COALESCE(VALUES(provider_plan_id), provider_plan_id),
+         payment_id = VALUES(payment_id), next_charge_at = VALUES(next_charge_at), status = 'active'`,
+      [
+        locationId,
+        payment.contact_id || null,
+        metadata?.ghlSubscriptionId || null,
+        payment.custom_str3 || null,
+        whopMembershipId,
+        payment.whop_plan_id || null,
+        payment.id,
+        metadata?.productCurrency || "USD",
+        payment.amount,
+        days,
+        nextCharge,
+      ],
+    );
+  }
+
   // ─── Notify the CRM (identical contract to the PayFast flow) ────────
   if (payment.custom_str3) {
     fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/ghl/notify`, {
@@ -244,6 +278,15 @@ export async function POST(request: NextRequest) {
         contactId: metadata?.contactId || payment.contact_id || null,
         invoiceId: metadata?.invoiceId || null,
         orderId: metadata?.orderId || null,
+        subscriptionId: metadata?.ghlSubscriptionId || null,
+        periodEnd:
+          payment.payment_type === "subscription"
+            ? new Date(
+                Date.now() +
+                  Math.max(1, Number(metadata?.billingPeriodDays || 30)) *
+                    86400000,
+              ).toISOString()
+            : null,
         eventType:
           payment.payment_type === "subscription"
             ? "subscription.charged"

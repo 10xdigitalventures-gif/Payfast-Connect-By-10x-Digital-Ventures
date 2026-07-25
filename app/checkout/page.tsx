@@ -29,6 +29,8 @@ interface GHLPaymentData {
   mode?: "payment" | "setup" | "subscription";
   isRecurring?: boolean;
   productDetails?: any[];
+  recurringFrequency?: string;
+  recurringIntervalCount?: number;
   contact?: {
     id?: string;
     name: string;
@@ -322,17 +324,23 @@ export default function CheckoutPage() {
           (d.locationId || d.transactionId || d.orderId || d.invoiceId));
 
       if (isPaymentInit) {
+        const recurringPrice = Array.isArray(d.productDetails)
+          ? d.productDetails
+              .flatMap((item: any) => item?.prices || [])
+              .find(
+                (price: any) =>
+                  String(price?.type || "").toLowerCase() === "recurring",
+              )
+          : null;
+        const recurringData = recurringPrice?.recurring || d.recurring || {};
         const isRecurring =
           !!d.subscriptionId ||
-          d.mode === "subscription" ||
+          String(d.mode || "").toLowerCase() === "subscription" ||
           d.isRecurring === true ||
-          !!d.recurring ||
-          (Array.isArray(d.productDetails) &&
-            d.productDetails.some(
-              (item: any) =>
-                item?.recurring ||
-                item?.prices?.some((price: any) => price?.type === "recurring"),
-            ));
+          !!recurringPrice ||
+          String(d.type || "")
+            .toLowerCase()
+            .includes("subscription");
         const incoming: GHLPaymentData = {
           amount: isSetupInit ? 0 : Number(amountNum),
           currency: d.currency || "PKR",
@@ -345,6 +353,12 @@ export default function CheckoutPage() {
           description: d.description,
           mode: d.mode,
           isRecurring,
+          recurringFrequency: String(
+            recurringData.interval || d.frequency || d.interval || "",
+          ),
+          recurringIntervalCount: Number(
+            recurringData.intervalCount || d.intervalCount || 1,
+          ),
           productDetails: d.productDetails,
           contact: d.contact,
         };
@@ -616,10 +630,8 @@ export default function CheckoutPage() {
             subscriptionId: payData.subscriptionId,
             isRecurring: !!payData.isRecurring,
             mode: payData.isRecurring ? "subscription" : payData.mode,
-            frequency:
-              (payData as any).recurring?.interval ||
-              (payData as any).frequency ||
-              "",
+            frequency: payData.recurringFrequency || "",
+            intervalCount: payData.recurringIntervalCount || 1,
             amount: payData.amount,
             currency: payData.currency,
             description: payData.description || "Payment",
