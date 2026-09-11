@@ -9,10 +9,10 @@ export const PAYFAST_VALID_IPS = [
 
 export interface PaymentParams {
   merchantId: string;
-  merchantKey: string; // merchant secured key
+  merchantKey: string;
   merchantName?: string | null;
   storeId?: string | null;
-  passphrase?: string | null; // merchant secret word
+  passphrase?: string | null;
   environment?: 'live' | 'sandbox';
   returnUrl: string;
   cancelUrl: string;
@@ -147,11 +147,14 @@ export async function buildPaymentForm(params: PaymentParams): Promise<{
     CURRENCY_CODE: normalizeCurrencyCode(params.currencyCode),
   };
 
-  // Some PayFast merchant profiles do not use Store IDs. Sending an empty
-  // STORE_ID causes the hosted checkout to reject an otherwise valid request.
   if (storeId) fields.STORE_ID = storeId;
 
   return { actionUrl: PAYFAST_POST_URL, fields };
+}
+
+function transactionApiUrl(path: string, query: URLSearchParams) {
+  const root = PAYFAST_TOKEN_URL.slice(0, PAYFAST_TOKEN_URL.lastIndexOf('/'));
+  return `${root}/${path}?${query.toString()}`;
 }
 
 export async function getTemporaryToken(params: any) {
@@ -167,7 +170,7 @@ export async function getTemporaryToken(params: any) {
     account_title: params.accountTitle,
   });
 
-  const response = await fetch(`https://ipg1.apps.net.pk/Ecommerce/api/Transaction/token?${query.toString()}`, {
+  const response = await fetch(transactionApiUrl('token', query), {
     headers: { 'Authorization': `Bearer ${params.token}` }
   });
   return await response.json();
@@ -186,7 +189,7 @@ export async function performTokenizedTransaction(params: any) {
     otp: params.otp,
   });
 
-  const response = await fetch(`https://ipg1.apps.net.pk/Ecommerce/api/Transaction/tokenized?${query.toString()}`, {
+  const response = await fetch(transactionApiUrl('tokenized', query), {
     headers: { 'Authorization': `Bearer ${params.token}` }
   });
   return await response.json();
@@ -194,14 +197,12 @@ export async function performTokenizedTransaction(params: any) {
 
 export async function addPermanentInstrument(params: any) {
   const query = new URLSearchParams({
-    // Parameters for adding permanent instrument as per docs
     instrument_token: params.instrumentToken,
     merchant_user_id: params.merchantUserId,
     user_mobile_number: params.userMobileNumber,
-    // ... other required fields
   });
 
-  const response = await fetch(`https://ipg1.apps.net.pk/Ecommerce/api/Transaction/add-permanent-payment-instrument?${query.toString()}`, {
+  const response = await fetch(transactionApiUrl('add-permanent-payment-instrument', query), {
     headers: { 'Authorization': `Bearer ${params.token}` }
   });
   return await response.json();
