@@ -46,17 +46,25 @@ export interface CapturedInstrumentDetails {
   expiryDate: string | null;
 }
 
+export function normalizeCurrencyCode(value?: string | null): string {
+  const normalized = String(value || 'PKR').trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(normalized)) {
+    throw new Error(`Invalid ISO currency code: ${value || ''}`);
+  }
+  return normalized;
+}
+
 function sha256(value: string) {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
 
 async function getAccessToken(params: PaymentParams, basketId: string) {
   const query = new URLSearchParams({
-    MERCHANT_ID: params.merchantId,
-    SECURED_KEY: params.merchantKey,
+    MERCHANT_ID: params.merchantId.trim(),
+    SECURED_KEY: params.merchantKey.trim(),
     TXNAMT: params.amount,
     BASKET_ID: basketId,
-    CURRENCY_CODE: params.currencyCode || 'PKR',
+    CURRENCY_CODE: normalizeCurrencyCode(params.currencyCode),
   });
 
   const response = await fetch(`${PAYFAST_TOKEN_URL}?${query.toString()}`);
@@ -89,18 +97,24 @@ export async function getMerchantAccessToken(params: {
 }
 
 function buildSignature(params: PaymentParams, basketId: string) {
-  return sha256(`${params.merchantId}:${params.merchantKey}:${params.amount}:${basketId}`);
+  return sha256(`${params.merchantId.trim()}:${params.merchantKey.trim()}:${params.amount}:${basketId}`);
 }
 
 export function verifySignature(data: Record<string, string>, securedKey?: string | null, merchantId?: string | null): boolean {
-  const validationHash = data.validation_hash || data.VALIDATION_HASH || '';
-  const basketId = data.basket_id || data.BASKET_ID || '';
-  const errCode = data.err_code || data.ERR_CODE || '';
+  const validationHash = (data.validation_hash || data.VALIDATION_HASH || '').trim().toLowerCase();
+  const basketId = (data.basket_id || data.BASKET_ID || '').trim();
+  const errCode = (data.err_code || data.ERR_CODE || '').trim();
 
   if (!validationHash || !basketId || !securedKey || !merchantId) return false;
 
-  const calculated = sha256(`${basketId}|${securedKey}|${merchantId}|${errCode}`);
-  return validationHash === calculated;
+  const calculated = sha256(`${basketId}|${securedKey.trim()}|${merchantId.trim()}|${errCode}`).toLowerCase();
+  if (validationHash.length !== calculated.length) return false;
+
+  try {
+    return crypto.timingSafeEqual(Buffer.from(validationHash), Buffer.from(calculated));
+  } catch {
+    return false;
+  }
 }
 
 export async function buildPaymentForm(params: PaymentParams): Promise<{
@@ -111,30 +125,33 @@ export async function buildPaymentForm(params: PaymentParams): Promise<{
   const token = await getAccessToken(params, basketId);
   const signature = buildSignature(params, basketId);
   const orderDate = new Date().toISOString().slice(0, 19).replace('T', ' ');
+  const storeId = params.storeId?.trim();
 
-  return {
-    actionUrl: PAYFAST_POST_URL,
-    fields: {
-      MERCHANT_ID: params.merchantId,
-      MERCHANT_NAME: params.merchantName || 'GoPayFast Merchant',
-      TOKEN: token,
-      PROCCODE: '00',
-      TXNAMT: params.amount,
-      CUSTOMER_MOBILE_NO: params.phone || '',
-      CUSTOMER_EMAIL_ADDRESS: params.emailAddress || '',
-      SIGNATURE: signature,
-      VERSION: 'APP-GOPAYFAST-1.0',
-      TXNDESC: params.itemDescription || params.itemName,
-      SUCCESS_URL: encodeURIComponent(params.returnUrl),
-      FAILURE_URL: encodeURIComponent(params.cancelUrl),
-      BASKET_ID: basketId,
-      ORDER_DATE: orderDate,
-      CHECKOUT_URL: encodeURIComponent(params.notifyUrl),
-      TRAN_TYPE: 'ECOMM_PURCHASE',
-      STORE_ID: params.storeId || '',
-      CURRENCY_CODE: params.currencyCode || 'PKR',
-    },
+  const fields: Record<string, string> = {
+    MERCHANT_ID: params.merchantId.trim(),
+    MERCHANT_NAME: params.merchantName?.trim() || 'GoPayFast Merchant',
+    TOKEN: token,
+    PROCCODE: '00',
+    TXNAMT: params.amount,
+    CUSTOMER_MOBILE_NO: params.phone || '',
+    CUSTOMER_EMAIL_ADDRESS: params.emailAddress || '',
+    SIGNATURE: signature,
+    VERSION: 'APP-GOPAYFAST-1.0',
+    TXNDESC: params.itemDescription || params.itemName,
+    SUCCESS_URL: encodeURIComponent(params.returnUrl),
+    FAILURE_URL: encodeURIComponent(params.cancelUrl),
+    BASKET_ID: basketId,
+    ORDER_DATE: orderDate,
+    CHECKOUT_URL: encodeURIComponent(params.notifyUrl),
+    TRAN_TYPE: 'ECOMM_PURCHASE',
+    CURRENCY_CODE: normalizeCurrencyCode(params.currencyCode),
   };
+
+  // Some PayFast merchant profiles do not use Store IDs. Sending an empty
+  // STORE_ID causes the hosted checkout to reject an otherwise valid request.
+  if (storeId) fields.STORE_ID = storeId;
+
+  return { actionUrl: PAYFAST_POST_URL, fields };
 }
 
 export async function getTemporaryToken(params: any) {
