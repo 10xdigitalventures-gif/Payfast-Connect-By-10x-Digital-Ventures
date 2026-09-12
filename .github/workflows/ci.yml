@@ -17,8 +17,7 @@ jobs:
           MYSQL_DATABASE: payfast_test
           MYSQL_USER: payfast_test
           MYSQL_PASSWORD: payfast_test_password
-        ports:
-          - 3306:3306
+        ports: ["3306:3306"]
         options: >-
           --health-cmd="mysqladmin ping --silent"
           --health-interval=5s
@@ -48,9 +47,7 @@ jobs:
         run: npm ci
       - name: Wait for MySQL
         run: |
-          for i in {1..30}; do
-            mysqladmin ping -h127.0.0.1 -P3306 -upayfast_test -ppayfast_test_password &>/dev/null && break || sleep 1
-          done
+          for i in {1..30}; do mysqladmin ping -h127.0.0.1 -P3306 -upayfast_test -ppayfast_test_password &>/dev/null && break || sleep 1; done
       - name: Initialize database schema
         shell: bash
         run: |
@@ -60,34 +57,19 @@ jobs:
           done
           mysql -h127.0.0.1 -P3306 -upayfast_test -ppayfast_test_password payfast_test <<'SQL'
           ALTER TABLE location_subscriptions ADD COLUMN provider VARCHAR(20) DEFAULT 'payfast' AFTER plan_id;
-          ALTER TABLE payment_instruments
-            ADD COLUMN contact_id VARCHAR(100) NULL AFTER location_id,
-            ADD COLUMN provider VARCHAR(20) NOT NULL DEFAULT 'payfast' AFTER contact_id,
-            ADD COLUMN provider_customer_id VARCHAR(120) NULL AFTER provider,
-            ADD COLUMN provider_payment_method_id VARCHAR(120) NULL AFTER provider_customer_id;
-          ALTER TABLE payments
-            ADD COLUMN custom_str3 VARCHAR(255) NULL AFTER custom_str2,
-            ADD COLUMN provider VARCHAR(20) DEFAULT 'payfast' AFTER payment_type;
+          ALTER TABLE payment_instruments ADD COLUMN contact_id VARCHAR(100) NULL AFTER location_id, ADD COLUMN provider VARCHAR(20) NOT NULL DEFAULT 'payfast' AFTER contact_id, ADD COLUMN provider_customer_id VARCHAR(120) NULL AFTER provider, ADD COLUMN provider_payment_method_id VARCHAR(120) NULL AFTER provider_customer_id;
+          ALTER TABLE payments ADD COLUMN custom_str3 VARCHAR(255) NULL AFTER custom_str2, ADD COLUMN provider VARCHAR(20) DEFAULT 'payfast' AFTER payment_type;
+          ALTER TABLE agency_settings
+            ADD COLUMN sandbox_merchant_id VARCHAR(100) NULL, ADD COLUMN sandbox_merchant_key VARCHAR(255) NULL, ADD COLUMN sandbox_merchant_name VARCHAR(200) NULL,
+            ADD COLUMN sandbox_store_id VARCHAR(100) NULL, ADD COLUMN sandbox_passphrase VARCHAR(255) NULL,
+            ADD COLUMN swich_live_client_id VARCHAR(150) NULL, ADD COLUMN swich_live_secret_key VARCHAR(255) NULL, ADD COLUMN swich_live_checkout_url VARCHAR(1000) NULL,
+            ADD COLUMN swich_sandbox_client_id VARCHAR(150) NULL, ADD COLUMN swich_sandbox_secret_key VARCHAR(255) NULL, ADD COLUMN swich_sandbox_checkout_url VARCHAR(1000) NULL,
+            ADD COLUMN route_subscription VARCHAR(20) DEFAULT 'payfast', ADD COLUMN whop_api_key VARCHAR(255) NULL, ADD COLUMN whop_company_id VARCHAR(100) NULL,
+            ADD COLUMN whop_webhook_secret VARCHAR(255) NULL, ADD COLUMN whop_exchange_rate DECIMAL(12,4) DEFAULT 280, ADD COLUMN whop_fee_percent DECIMAL(8,4) DEFAULT 0,
+            ADD COLUMN whop_rate_mode VARCHAR(20) DEFAULT 'fixed', ADD COLUMN whop_currency VARCHAR(10) DEFAULT 'PKR';
+          ALTER TABLE billing_invoices ADD COLUMN provider VARCHAR(20) NOT NULL DEFAULT 'payfast' AFTER payment_id;
           SQL
       - name: Run tests
-        shell: bash
-        run: |
-          set +e
-          npm test -- --runInBand 2>&1 | tee test-output.log
-          status=${PIPESTATUS[0]}
-          if [ "$status" -ne 0 ]; then
-            details=$(tail -n 50 test-output.log | tr '\n' ' ' | sed 's/%/%25/g;s/\r/%0D/g')
-            echo "::error title=Jest failure::$details"
-            exit "$status"
-          fi
+        run: npm test -- --runInBand
       - name: Build
-        shell: bash
-        run: |
-          set +e
-          npm run build 2>&1 | tee build-output.log
-          status=${PIPESTATUS[0]}
-          if [ "$status" -ne 0 ]; then
-            details=$(tail -n 80 build-output.log | tr '\n' ' ' | sed 's/%/%25/g;s/\r/%0D/g')
-            echo "::error title=Next.js build failure::$details"
-            exit "$status"
-          fi
+        run: npm run build
