@@ -6,9 +6,6 @@ on:
   pull_request:
     branches: [ main ]
 
-permissions:
-  contents: write
-
 jobs:
   test-and-build:
     runs-on: ubuntu-latest
@@ -40,27 +37,13 @@ jobs:
       NEXT_PUBLIC_APP_URL: http://localhost:3000
       SESSION_SECRET: test_session_secret_at_least_32_chars
     steps:
-      - name: Checkout dependency branch
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: fix/patch-vulnerabilities-99d54e8d-1789187233
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-      - name: Synchronize lockfile
-        run: npm install --package-lock-only --ignore-scripts
-      - name: Commit synchronized lockfile
-        shell: bash
-        run: |
-          if ! git diff --quiet -- package-lock.json; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add package-lock.json
-            git commit -m "chore: synchronize dependency lockfile"
-            git push origin HEAD:fix/patch-vulnerabilities-99d54e8d-1789187233
-          fi
       - name: Install dependencies
         run: npm ci
       - name: Wait for MySQL
@@ -87,6 +70,24 @@ jobs:
             ADD COLUMN provider VARCHAR(20) DEFAULT 'payfast' AFTER payment_type;
           SQL
       - name: Run tests
-        run: npm test -- --runInBand
+        shell: bash
+        run: |
+          set +e
+          npm test -- --runInBand 2>&1 | tee test-output.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            details=$(tail -n 50 test-output.log | tr '\n' ' ' | sed 's/%/%25/g;s/\r/%0D/g')
+            echo "::error title=Jest failure::$details"
+            exit "$status"
+          fi
       - name: Build
-        run: npm run build
+        shell: bash
+        run: |
+          set +e
+          npm run build 2>&1 | tee build-output.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            details=$(tail -n 80 build-output.log | tr '\n' ' ' | sed 's/%/%25/g;s/\r/%0D/g')
+            echo "::error title=Next.js build failure::$details"
+            exit "$status"
+          fi
