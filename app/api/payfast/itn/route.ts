@@ -6,15 +6,11 @@ import { parsePublicPayMeta } from '@/lib/public-pay';
 import { savePaymentInstrument } from '@/lib/payment-instruments';
 
 function getValue(record: Record<string, string>, ...keys: string[]) { for (const key of keys) { const value = record[key]; if (value != null && value !== '') return value; } return ''; }
-
 function popupCloseResponse(status: 'complete' | 'failed' | 'cancelled') {
   const title = status === 'complete' ? 'Payment complete' : status === 'cancelled' ? 'Payment cancelled' : 'Payment not completed';
   const message = status === 'complete' ? 'Your payment was confirmed.' : status === 'cancelled' ? 'No charge was made.' : 'The payment was declined or cancelled.';
-  const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${title}</title></head>
-  <body style="margin:0;background:#0b0f19;color:#fff;font-family:Arial,sans-serif;display:grid;place-items:center;min-height:100vh;text-align:center">
-  <main><div style="font-size:38px">${status === 'complete' ? '✓' : '×'}</div><h2>${title}</h2><p style="color:#aab4c8">${message}<br>This window will close automatically.</p><button onclick="window.close()" style="padding:10px 18px;border:0;border-radius:8px;cursor:pointer">Close window</button></main>
-  <script>try{if(window.opener){window.opener.postMessage({type:'payfast_popup_result',status:${JSON.stringify(status)}},'*')}}catch(e){};setTimeout(function(){window.close()},350);</script></body></html>`;
-  return new NextResponse(html, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
+  return new NextResponse(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${title}</title></head><body style="margin:0;background:#0b0f19;color:#fff;font-family:Arial,sans-serif;display:grid;place-items:center;min-height:100vh;text-align:center"><main><div style="font-size:38px">${status === 'complete' ? '✓' : '×'}</div><h2>${title}</h2><p style="color:#aab4c8">${message}<br>This window will close automatically.</p><button onclick="window.close()" style="padding:10px 18px;border:0;border-radius:8px;cursor:pointer">Close window</button></main><script>try{if(window.opener){window.opener.postMessage({type:'payfast_popup_result',status:${JSON.stringify(status)}},'*')}}catch(e){};setTimeout(function(){window.close()},350);</script></body></html>`,
+    { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
 }
 
 async function processAppsCallback(request: NextRequest, payload: Record<string, string>) {
@@ -32,9 +28,6 @@ async function processAppsCallback(request: NextRequest, payload: Record<string,
   const paymentRows = await query<any[]>(`SELECT * FROM payments WHERE pf_token=? AND location_id=? ORDER BY id DESC LIMIT 1`, [basketId, locationId]);
   if (!paymentRows.length) return new NextResponse('Payment not found', { status: 404 });
   const payment = paymentRows[0];
-
-  // PayFast's cancel URL can be opened without a signed gateway payload. It is
-  // safe to cancel only the matching pending, random basket belonging to this location.
   if (redirectMode === 'Y' && explicitlyCancelled && !getValue(payload, 'validation_hash', 'VALIDATION_HASH')) {
     await query(`UPDATE payments SET status='failed',raw_itn=?,updated_at=NOW() WHERE id=? AND status='pending'`, [JSON.stringify({ cancelled: true }), payment.id]);
     return popupCloseResponse('cancelled');
@@ -43,37 +36,43 @@ async function processAppsCallback(request: NextRequest, payload: Record<string,
   const instRows = await query<Installation[]>('SELECT * FROM installations WHERE location_id=?', [locationId]);
   if (!instRows.length) return new NextResponse('Installation not found', { status: 404 });
   const inst = instRows[0];
-  if (!verifySignature(payload, inst.merchant_key, inst.merchant_id)) {
-    console.warn('[APPS Callback] Signature mismatch');
-    return new NextResponse('Invalid signature', { status: 400 });
-  }
+  if (!verifySignature(payload, inst.merchant_key, inst.merchant_id)) return new NextResponse('Invalid signature', { status: 400 });
 
   let metadata: any = null;
   try { metadata = payment.item_description ? JSON.parse(payment.item_description) : null; } catch { metadata = null; }
   const success = errCode === '000';
+  // Some PayFast responses omit a separate transaction id. Always persist a
+  // stable chargeId so HighLevel's backend verification can find the payment.
+  const chargeId = transactionId || basketId;
   await query(`UPDATE payments SET pf_payment_id=?,status=?,raw_itn=?,updated_at=NOW() WHERE id=?`,
-    [transactionId || null, success ? 'complete' : 'failed', JSON.stringify({ ...payload, paymentMethod }), payment.id]);
+    [chargeId, success ? 'complete' : 'failed', JSON.stringify({ ...payload, paymentMethod }), payment.id]);
 
   if (success) {
     if (capturedInstrument.instrumentToken) await savePaymentInstrument(locationId, { instrumentToken: capturedInstrument.instrumentToken,
       instrumentAlias: capturedInstrument.alias || paymentMethod || null, cardLastFour: capturedInstrument.cardLastFour,
       expiryDate: capturedInstrument.expiryDate, isDefault: payment.payment_type === 'subscription' });
     if (payment.custom_str3) {
-      fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/ghl/notify`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ locationId, ghlTransactionId: payment.custom_str3, chargeId: transactionId, amount: payment.amount,
-          contactId: metadata?.contactId || payment.contact_id || null, invoiceId: metadata?.invoiceId || null,
-          eventType: payment.payment_type === 'subscription' ? 'subscription.charged' : 'payment.captured' }) }).catch((e) => console.error('[APPS→CRM Notify]', e));
+      // Await this request. Fire-and-forget work may be terminated early by a
+      // serverless host, which left HighLevel without its payment.captured event.
+      try {
+        const notifyResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/ghl/notify`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ locationId, ghlTransactionId: payment.custom_str3, chargeId, amount: payment.amount,
+            contactId: metadata?.contactId || payment.contact_id || null, invoiceId: metadata?.invoiceId || null,
+            orderId: metadata?.orderId || null, subscriptionId: metadata?.subscriptionId || null,
+            eventType: payment.payment_type === 'subscription' ? 'subscription.charged' : 'payment.captured' }) });
+        if (!notifyResponse.ok) console.error('[APPS→CRM Notify]', notifyResponse.status, await notifyResponse.text());
+      } catch (error) { console.error('[APPS→CRM Notify]', error); }
     } else {
       const tags = (inst.tag_on_payment || 'paid,customer').split(',').map((t) => t.trim()).filter(Boolean);
       const ghlId = await handlePaymentSync({ locationId, email: payment.payer_email, firstName: payment.payer_first || '', lastName: payment.payer_last || '',
         contactId: payment.contact_id || undefined, tags, oppStatus: inst.move_opp_stage || 'won', autoCreate: !!inst.auto_create_contact });
       if (ghlId) await query('UPDATE payments SET synced_ghl=1,contact_id=? WHERE id=?', [ghlId, payment.id]);
       const sourceMeta = metadata?.kind ? metadata : parsePublicPayMeta(metadata?.customStr4 || null);
-      if (sourceMeta?.kind === 'invoice') await query(`UPDATE invoices SET status='paid',paid_at=NOW(),pf_payment_id=? WHERE id=?`, [transactionId, sourceMeta.id]);
+      if (sourceMeta?.kind === 'invoice') await query(`UPDATE invoices SET status='paid',paid_at=NOW(),pf_payment_id=? WHERE id=?`, [chargeId, sourceMeta.id]);
       if (sourceMeta?.kind === 'payment_link') await query('UPDATE payment_links SET uses_count=uses_count+1 WHERE id=?', [sourceMeta.id]);
-      if (sourceMeta?.kind === 'text2pay') await query(`UPDATE text2pay SET status='paid',paid_at=NOW(),pf_payment_id=? WHERE id=?`, [transactionId, sourceMeta.id]);
+      if (sourceMeta?.kind === 'text2pay') await query(`UPDATE text2pay SET status='paid',paid_at=NOW(),pf_payment_id=? WHERE id=?`, [chargeId, sourceMeta.id]);
       if (sourceMeta?.kind === 'order_form') await query('UPDATE order_forms SET submissions=submissions+1 WHERE id=?', [sourceMeta.id]);
-      if (sourceMeta?.kind === 'schedule_installment') await query(`UPDATE schedule_installments SET status='paid',paid_at=NOW(),pf_payment_id=? WHERE id=?`, [transactionId, sourceMeta.id]);
+      if (sourceMeta?.kind === 'schedule_installment') await query(`UPDATE schedule_installments SET status='paid',paid_at=NOW(),pf_payment_id=? WHERE id=?`, [chargeId, sourceMeta.id]);
       if (sourceMeta?.couponCode) await query('UPDATE coupons SET uses_count=uses_count+1 WHERE location_id=? AND code=?', [locationId, sourceMeta.couponCode]);
       if (payment.payment_type === 'subscription' && capturedInstrument.instrumentToken) await query(`INSERT INTO subscriptions (location_id,contact_id,pf_token,payer_email,amount,frequency,status,next_billing)
         VALUES (?,?,?,?,?,'monthly','active',DATE_ADD(CURDATE(),INTERVAL 1 MONTH)) ON DUPLICATE KEY UPDATE payer_email=VALUES(payer_email),amount=VALUES(amount),status='active'`,
