@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query, Installation } from '@/lib/db';
-import { buildPaymentForm, buildSubscriptionForm } from '@/lib/payfast';
+import { buildPaymentForm, buildSubscriptionForm, normalizeCurrencyCode } from '@/lib/payfast';
 import { generateToken } from '@/lib/tokens';
 
 export async function POST(request: NextRequest) {
@@ -24,6 +24,21 @@ export async function POST(request: NextRequest) {
 
   if (!locationId || !amount || !email) {
     return NextResponse.json({ error: 'locationId, amount, email required' }, { status: 400 });
+  }
+
+  const numericAmount = Number(amount);
+  if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+    return NextResponse.json({ error: 'A valid positive amount is required' }, { status: 400 });
+  }
+
+  let currencyCode: string;
+  try {
+    currencyCode = normalizeCurrencyCode(currency);
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Invalid currency' },
+      { status: 400 },
+    );
   }
 
   // Get GoPayFast credentials for this location
@@ -54,9 +69,14 @@ export async function POST(request: NextRequest) {
     [
       locationId, contactId || null, email,
       nameFirst || '', nameLast || '.',
-      parseFloat(amount),
+      numericAmount,
       description || 'CRM Payment',
-      JSON.stringify({ invoiceId: invoiceId || null, orderId: orderId || null, contactId: contactId || null }),
+      JSON.stringify({
+        invoiceId: invoiceId || null,
+        orderId: orderId || null,
+        contactId: contactId || null,
+        currency: currencyCode,
+      }),
       isRecurring ? 'subscription' : 'one-time',
       'pending',
       basketId,
@@ -70,7 +90,7 @@ export async function POST(request: NextRequest) {
     merchantId:   inst.merchant_id!,
     merchantKey:  inst.merchant_key!,
     merchantName: inst.merchant_name || null,
-    storeId: inst.store_id || null,
+    storeId:      inst.store_id || null,
     passphrase:   inst.passphrase,
     environment:  inst.environment,
     returnUrl:    `${appUrl}/api/payfast/itn?location_id=${encodeURIComponent(locationId)}&basket_id=${encodeURIComponent(basketId)}&redirect=Y`,
@@ -80,24 +100,38 @@ export async function POST(request: NextRequest) {
     nameLast:     nameLast  || '.',
     emailAddress: email,
     phone,
-    amount:       parseFloat(amount).toFixed(2),
+    amount:       numericAmount.toFixed(2),
     itemName:     (description || 'CRM Payment').slice(0, 100),
     itemDescription: invoiceId ? `Invoice: ${invoiceId}` : orderId ? `Order: ${orderId}` : '',
     customStr1:   payToken,
     customStr2:   locationId,
     customStr3:   ghlTransactionId,
+    currencyCode,
   };
 
-  const form = isRecurring
-    ? buildSubscriptionForm({ ...baseParams, frequency: frequency as '3' | '4' | '6', recurringAmount: baseParams.amount })
-    : buildPaymentForm(baseParams);
+  try {
+    const form = isRecurring
+      ? buildSubscriptionForm({ ...baseParams, frequency: frequency as '3' | '4' | '6', recurringAmount: baseParams.amount })
+      : buildPaymentForm(baseParams);
 
-  const resolvedForm = await form;
+    const resolvedForm = await form;
 
-  return NextResponse.json({
-    actionUrl: resolvedForm.actionUrl,
-    fields: resolvedForm.fields,
-    payToken,
-    basketId, // <-- added: the iframe polls /api/ghl/payment-status with this
-  });
+    return NextResponse.json({
+      actionUrl: resolvedForm.actionUrl,
+      fields: resolvedForm.fields,
+      payToken,
+      basketId, // the iframe polls /api/ghl/payment-status with this
+      currency: currencyCode,
+    });
+  } catch (error) {
+    await query(
+      `UPDATE payments SET status = 'failed', updated_at = NOW() WHERE pf_token = ? AND location_id = ?`,
+      [basketId, locationId],
+    );
+
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Unable to start payment' },
+      { status: 400 },
+    );
+  }
 }
