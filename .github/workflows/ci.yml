@@ -55,6 +55,11 @@ jobs:
             mysqladmin ping -h127.0.0.1 -P3306 -upayfast_test -ppayfast_test_password &>/dev/null && break || sleep 1
           done
 
+      - name: Initialize database schema
+        run: |
+          sed 's/payfast_ghl/payfast_test/g' scripts/setup.sql | mysql -h127.0.0.1 -P3306 -upayfast_test -ppayfast_test_password
+          sed 's/payfast_ghl/payfast_test/g' scripts/agency-billing.sql | mysql -h127.0.0.1 -P3306 -upayfast_test -ppayfast_test_password
+
       - name: Run tests
         shell: bash
         run: |
