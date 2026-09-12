@@ -58,9 +58,19 @@ jobs:
           done
 
       - name: Initialize database schema
+        shell: bash
         run: |
           for migration in scripts/setup.sql scripts/agency-billing.sql scripts/suspension-adapter.sql scripts/wallet_tokenization.sql; do
-            sed 's/payfast_ghl/payfast_test/g' "$migration" | mysql -h127.0.0.1 -P3306 -upayfast_test -ppayfast_test_password
+            sed 's/payfast_ghl/payfast_test/g' "$migration" > current-migration.sql
+            set +e
+            mysql -h127.0.0.1 -P3306 -upayfast_test -ppayfast_test_password < current-migration.sql 2>&1 | tee migration-output.log
+            status=${PIPESTATUS[0]}
+            set -e
+            if [ "$status" -ne 0 ]; then
+              details=$(tail -n 40 migration-output.log | tr '\n' ' ' | sed 's/%/%25/g;s/\r/%0D/g')
+              echo "::error title=Schema migration failure ($migration)::$details"
+              exit "$status"
+            fi
           done
 
       - name: Run tests
