@@ -41,38 +41,36 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-
       - name: Install dependencies
         run: npm ci
-
       - name: Wait for MySQL
         run: |
           for i in {1..30}; do
             mysqladmin ping -h127.0.0.1 -P3306 -upayfast_test -ppayfast_test_password &>/dev/null && break || sleep 1
           done
-
       - name: Initialize database schema
         shell: bash
         run: |
           for migration in scripts/setup.sql scripts/agency-billing.sql scripts/suspension-adapter.sql scripts/wallet_tokenization.sql; do
             sed -e 's/payfast_ghl/payfast_test/g' -e 's/ADD COLUMN IF NOT EXISTS/ADD COLUMN/g' "$migration" > current-migration.sql
-            set +e
-            mysql -h127.0.0.1 -P3306 -upayfast_test -ppayfast_test_password payfast_test < current-migration.sql 2>&1 | tee migration-output.log
-            status=${PIPESTATUS[0]}
-            set -e
-            if [ "$status" -ne 0 ]; then
-              details=$(tail -n 40 migration-output.log | tr '\n' ' ' | sed 's/%/%25/g;s/\r/%0D/g')
-              echo "::error title=Schema migration failure ($migration)::$details"
-              exit "$status"
-            fi
+            mysql -h127.0.0.1 -P3306 -upayfast_test -ppayfast_test_password payfast_test < current-migration.sql
           done
-
+          mysql -h127.0.0.1 -P3306 -upayfast_test -ppayfast_test_password payfast_test <<'SQL'
+          ALTER TABLE location_subscriptions ADD COLUMN provider VARCHAR(20) DEFAULT 'payfast' AFTER plan_id;
+          ALTER TABLE payment_instruments
+            ADD COLUMN contact_id VARCHAR(100) NULL AFTER location_id,
+            ADD COLUMN provider VARCHAR(20) NOT NULL DEFAULT 'payfast' AFTER contact_id,
+            ADD COLUMN provider_customer_id VARCHAR(120) NULL AFTER provider,
+            ADD COLUMN provider_payment_method_id VARCHAR(120) NULL AFTER provider_customer_id;
+          ALTER TABLE payments
+            ADD COLUMN custom_str3 VARCHAR(255) NULL AFTER custom_str2,
+            ADD COLUMN provider VARCHAR(20) DEFAULT 'payfast' AFTER payment_type;
+          SQL
       - name: Run tests
         shell: bash
         run: |
@@ -84,7 +82,6 @@ jobs:
             echo "::error title=Jest failure::$details"
             exit "$status"
           fi
-
       - name: Build
         shell: bash
         run: |
