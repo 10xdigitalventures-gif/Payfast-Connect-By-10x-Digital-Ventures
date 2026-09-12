@@ -57,8 +57,9 @@ jobs:
 
       - name: Initialize database schema
         run: |
-          sed 's/payfast_ghl/payfast_test/g' scripts/setup.sql | mysql -h127.0.0.1 -P3306 -upayfast_test -ppayfast_test_password
-          sed 's/payfast_ghl/payfast_test/g' scripts/agency-billing.sql | mysql -h127.0.0.1 -P3306 -upayfast_test -ppayfast_test_password
+          for migration in scripts/setup.sql scripts/agency-billing.sql scripts/suspension-adapter.sql scripts/wallet_tokenization.sql; do
+            sed 's/payfast_ghl/payfast_test/g' "$migration" | mysql -h127.0.0.1 -P3306 -upayfast_test -ppayfast_test_password
+          done
 
       - name: Run tests
         shell: bash
