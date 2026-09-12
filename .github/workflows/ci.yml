@@ -13,10 +13,10 @@ jobs:
       mysql:
         image: mysql:8.0
         env:
-          MYSQL_ROOT_PASSWORD: ${{ secrets.MYSQL_ROOT_PASSWORD }}
-          MYSQL_DATABASE: ${{ secrets.DB_NAME }}
-          MYSQL_USER: ${{ secrets.DB_USER }}
-          MYSQL_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          MYSQL_ROOT_PASSWORD: root_test_password
+          MYSQL_DATABASE: payfast_test
+          MYSQL_USER: payfast_test
+          MYSQL_PASSWORD: payfast_test_password
         ports:
           - 3306:3306
         options: >-
@@ -27,35 +27,67 @@ jobs:
     env:
       DB_HOST: 127.0.0.1
       DB_PORT: 3306
-      DB_USER: ${{ secrets.DB_USER }}
-      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-      DB_NAME: ${{ secrets.DB_NAME }}
-      GHL_CLIENT_ID: ${{ secrets.GHL_CLIENT_ID }}
-      GHL_CLIENT_SECRET: ${{ secrets.GHL_CLIENT_SECRET }}
-      AGENCY_GHL_CLIENT_ID: ${{ secrets.AGENCY_GHL_CLIENT_ID }}
-      AGENCY_GHL_CLIENT_SECRET: ${{ secrets.AGENCY_GHL_CLIENT_SECRET }}
-      NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
-      SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+      DB_USER: payfast_test
+      DB_PASSWORD: payfast_test_password
+      DB_NAME: payfast_test
+      GHL_CLIENT_ID: test_client_id
+      GHL_CLIENT_SECRET: test_client_secret
+      AGENCY_GHL_CLIENT_ID: test_agency_client_id
+      AGENCY_GHL_CLIENT_SECRET: test_agency_client_secret
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      SESSION_SECRET: test_session_secret_at_least_32_chars
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 18
-
+          node-version: 20
+          cache: npm
       - name: Install dependencies
         run: npm ci
-
       - name: Wait for MySQL
         run: |
           for i in {1..30}; do
-            mysqladmin ping -h127.0.0.1 -P3306 -u${{ secrets.DB_USER }} -p${{ secrets.DB_PASSWORD }} &>/dev/null && break || sleep 1
+            mysqladmin ping -h127.0.0.1 -P3306 -upayfast_test -ppayfast_test_password &>/dev/null && break || sleep 1
           done
-
+      - name: Initialize database schema
+        shell: bash
+        run: |
+          for migration in scripts/setup.sql scripts/agency-billing.sql scripts/suspension-adapter.sql scripts/wallet_tokenization.sql; do
+            sed -e 's/payfast_ghl/payfast_test/g' -e 's/ADD COLUMN IF NOT EXISTS/ADD COLUMN/g' "$migration" > current-migration.sql
+            mysql -h127.0.0.1 -P3306 -upayfast_test -ppayfast_test_password payfast_test < current-migration.sql
+          done
+          mysql -h127.0.0.1 -P3306 -upayfast_test -ppayfast_test_password payfast_test <<'SQL'
+          ALTER TABLE location_subscriptions ADD COLUMN provider VARCHAR(20) DEFAULT 'payfast' AFTER plan_id;
+          ALTER TABLE payment_instruments
+            ADD COLUMN contact_id VARCHAR(100) NULL AFTER location_id,
+            ADD COLUMN provider VARCHAR(20) NOT NULL DEFAULT 'payfast' AFTER contact_id,
+            ADD COLUMN provider_customer_id VARCHAR(120) NULL AFTER provider,
+            ADD COLUMN provider_payment_method_id VARCHAR(120) NULL AFTER provider_customer_id;
+          ALTER TABLE payments
+            ADD COLUMN custom_str3 VARCHAR(255) NULL AFTER custom_str2,
+            ADD COLUMN provider VARCHAR(20) DEFAULT 'payfast' AFTER payment_type;
+          SQL
       - name: Run tests
-        run: npm test
-
+        shell: bash
+        run: |
+          set +e
+          npm test -- --runInBand 2>&1 | tee test-output.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            details=$(tail -n 50 test-output.log | tr '\n' ' ' | sed 's/%/%25/g;s/\r/%0D/g')
+            echo "::error title=Jest failure::$details"
+            exit "$status"
+          fi
       - name: Build
-        run: npm run build
+        shell: bash
+        run: |
+          set +e
+          npm run build 2>&1 | tee build-output.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            details=$(tail -n 80 build-output.log | tr '\n' ' ' | sed 's/%/%25/g;s/\r/%0D/g')
+            echo "::error title=Next.js build failure::$details"
+            exit "$status"
+          fi
