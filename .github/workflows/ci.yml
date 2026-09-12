@@ -34,8 +34,6 @@ jobs:
       GHL_CLIENT_SECRET: test_client_secret
       AGENCY_GHL_CLIENT_ID: test_agency_client_id
       AGENCY_GHL_CLIENT_SECRET: test_agency_client_secret
-      WHOP_GHL_CLIENT_ID: test_whop_client_id
-      WHOP_GHL_CLIENT_SECRET: test_whop_client_secret
       NEXT_PUBLIC_APP_URL: http://localhost:3000
       SESSION_SECRET: test_session_secret_at_least_32_chars
     steps:
