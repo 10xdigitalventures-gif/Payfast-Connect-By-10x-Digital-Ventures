@@ -11,9 +11,6 @@ export async function POST(request: NextRequest) {
   const body = await request.json();
   const apiKey = String(body.apiKey || body.api_key || request.headers.get('x-api-key') || '').trim();
   let locationId = String(body.locationId || request.nextUrl.searchParams.get('locationId') || '').trim();
-
-  // HighLevel's documented verify payload does not always contain locationId.
-  // Provider API keys are unique, so use the key to restore the location context.
   if (!locationId && apiKey) {
     const owners = await query<any[]>('SELECT location_id FROM installations WHERE provider_api_key=? LIMIT 1', [apiKey]);
     locationId = owners[0]?.location_id || '';
@@ -43,10 +40,9 @@ export async function POST(request: NextRequest) {
         chargedAt: Math.floor(new Date(payment.updated_at || payment.created_at || Date.now()).getTime() / 1000) } });
   }
 
-  // Preserve the existing refund/subscription/payment-method implementation,
-  // injecting the securely resolved location for payloads that omit it.
   const base = (process.env.NEXT_PUBLIC_APP_URL || '').replace(/\/$/, '');
-  const forwarded = await fetch(`${base}/api/ghl/query`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+  const forwarded = await fetch(`${base}/api/ghl/query`, { method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-ghl-query-legacy': '1' },
     body: JSON.stringify({ ...body, locationId }) });
   return new NextResponse(await forwarded.text(), { status: forwarded.status,
     headers: { 'Content-Type': forwarded.headers.get('content-type') || 'application/json' } });
