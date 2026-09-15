@@ -1,41 +1,33 @@
-# GoPayFast Connect
+# 10x Gateway Connect
 
-GoPayFast Connect is a CRM-first GoHighLevel payment connector. Every install is scoped by `location_id`, so each sub-account keeps its own settings, billing, and credentials isolated.
+A multi-app GoHighLevel payment connector served from one domain. PayFast, Whop, and Swich are separate Marketplace apps with independent OAuth credentials, gateway settings, checkout routes, provider keys, webhooks/callbacks, and deployment migrations.
 
-## Final surface
-- `/dashboard`
-- `/settings`
-- `/billing`
-- `/install`
-- `/agency`
-- `/apply`
-- `/support`
+## Standalone apps
+| App | Settings | Checkout | Provider query | Callback/webhook |
+| --- | --- | --- | --- | --- |
+| PayFast | `/apps/payfast/settings` | `/apps/payfast/checkout` | `/api/apps/payfast/query` | `/api/apps/payfast/itn` |
+| Whop | `/apps/whop/settings` | `/apps/whop/checkout` | `/api/apps/whop/query` | `/api/apps/whop/webhook` |
+| Swich | `/apps/swich/settings` | `/apps/swich/checkout` | `/api/apps/swich/query` | `/api/apps/swich/callback` |
 
-## What it does
-- CRM install and OAuth handling
-- Per-location credential storage
-- PayFast ITN and CRM sync
-- Optional Whop payments (card, BNPL & crypto) as a second provider
-- Agency billing and SaaS controls
-- Merchant onboarding and admin review
+The legacy combined routes remain temporarily for migration compatibility. New Marketplace apps must use the standalone URLs.
 
-## Payment providers
-- **GoPayFast** — PKR cards/bank via PayFast ITN (default).
-- **Whop** — optional per-location provider charged in USD, confirmed by a signed Whop webhook. When both are enabled, checkout shows a payment-method selector. See `WHOP-SETUP.md`.
+## Provider support
+- **PayFast:** one-time payments and repository-supported recurring flows; live/sandbox credentials are selected in its own app.
+- **Whop:** one-time payments, subscriptions, card setup, refunds, and membership cancellation with signed webhooks.
+- **Swich:** one-time payment foundation. Live use is blocked on confirmation of merchant-specific official API/checksum documentation; subscriptions and refunds are not advertised.
 
-## Support
-- Email: `support@10xdigitalventures.com`
-- WhatsApp: `+92 320 2900295`
+## Setup guides
+- `PAYFAST-GHL-APP-SETUP.md`
+- `WHOP-GHL-APP-SETUP.md`
+- `SWICH-GHL-APP-SETUP.md`
+- `DEPLOY.md`
 
-## Notes
-- Local payment/catalog CRUD pages were removed from the final UI.
-- Always filter location data by `location_id`.
+## Security and reliability
+- Scope all data by `location_id` and provider.
+- Never share OAuth or gateway credentials between apps.
+- Verify provider signatures/checksums before state changes.
+- Process terminal callbacks idempotently.
+- Send HighLevel terminal browser messages as JSON strings.
 
 ## Tech
-- Next.js App Router
-- TypeScript
-- MySQL (`mysql2`)
-- JWT auth (`jose`)
-- GoHighLevel OAuth + provider APIs
-
-See `DEPLOY.md` for setup instructions.
+Next.js App Router, TypeScript, MySQL, GoHighLevel OAuth/custom-provider APIs.

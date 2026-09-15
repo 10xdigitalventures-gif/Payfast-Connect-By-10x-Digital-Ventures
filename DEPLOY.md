@@ -1,44 +1,33 @@
 # Deployment Guide
 
-## Environment
-Set these variables in Hostinger:
-- `NEXT_PUBLIC_APP_URL`
-- `SESSION_SECRET`
-- `DB_HOST`
-- `DB_PORT`
-- `DB_USER`
-- `DB_PASSWORD`
-- `DB_NAME`
-- `GHL_CLIENT_ID`
-- `GHL_CLIENT_SECRET`
-- `NEXT_PUBLIC_ADMIN_PASSWORD`
+## Shared environment
+Set `NEXT_PUBLIC_APP_URL`, `SESSION_SECRET`, and the MySQL variables: `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`.
 
-## Database
-Import `scripts/setup.sql` into MySQL.
+## Provider app environment
+- PayFast: `PAYFAST_GHL_CLIENT_ID`, `PAYFAST_GHL_CLIENT_SECRET`, `PAYFAST_GHL_SHARED_SECRET`, `PAYFAST_GHL_APP_TOKEN`, `PAYFAST_GHL_MARKETPLACE_APP_ID`, `PAYFAST_GHL_PROVIDER_LOGO_URL`.
+- Whop: `WHOP_GHL_CLIENT_ID`, `WHOP_GHL_CLIENT_SECRET`, `WHOP_GHL_SHARED_SECRET`, `WHOP_GHL_APP_TOKEN`, `WHOP_GHL_MARKETPLACE_APP_ID`, `WHOP_GHL_PROVIDER_LOGO_URL`, `WHOP_GHL_WEBHOOK_PUBLIC_KEY`.
+- Swich: `SWICH_GHL_CLIENT_ID`, `SWICH_GHL_CLIENT_SECRET`, `SWICH_GHL_SHARED_SECRET`, `SWICH_GHL_APP_TOKEN`, `SWICH_GHL_MARKETPLACE_APP_ID`, `SWICH_GHL_PROVIDER_LOGO_URL`.
 
-## Run mode
-- Use production start, not dev mode.
-- Command: `npm run build` then `npm run start`
+Never reuse credentials between gateway apps.
 
-## CRM setup
-1. Visit `/install`
-2. Authorize CRM access
-3. After redirect, save GoPayFast credentials in `/settings`
-4. Verify dashboard shows the correct `location_id`
+## Database migrations
+1. Base/production schema migrations already used by the deployment.
+2. `scripts/payfast-ghl-app.sql`
+3. `scripts/whop-ghl-app.sql`
+4. `scripts/whop-standalone-app.sql`
+5. `scripts/whop-ghl-provider-compliance-migration.sql`
+6. `scripts/swich-standalone-app.sql`
 
-## Webhooks
-Use these URLs in GoPayFast:
-- Notification URL: `https://payfast.10xdigitalventures.com/api/payfast/itn`
-- Return URL: `https://payfast.10xdigitalventures.com/pay/success`
-- Cancel URL: `https://payfast.10xdigitalventures.com/pay/success`
+Back up the production database first and apply migrations once.
 
-## Test flow
-1. Install the app
-2. Confirm `/settings` shows login credentials
-3. Save gateway fields
-4. Confirm dashboard shows connected status
+## Marketplace URLs
+Use the exact provider-specific URLs in `SITEMAP.md`. Do not point a standalone app to legacy combined routes.
 
-## Troubleshooting
-- 502 errors usually mean the app is not running in production mode.
-- If `location_id` is wrong, reinstall the app.
-- If login creds are missing, check the `installation_credentials` table.
+## Verification
+For each provider: install into one test location, save sandbox/test credentials, verify initiation and signed callback, test duplicate delivery, confirm the GHL receipt advances, and then run one limited live payment.
+
+## Swich gate
+Do not enable Swich live mode until official onboarding documentation confirms endpoint URLs, request field names, checksum construction, callback statuses, refunds, and recurring support.
+
+## Runtime
+Use `npm run build` followed by `npm run start`. Never use development mode in production.

@@ -1,37 +1,34 @@
-# GoPayFast Connect - Technical Docs
-
-This is the final CRM-first reference for the codebase.
+# 10x Gateway Connect — Current Architecture
 
 ## Architecture
-- Each install is scoped by `location_id`.
-- OAuth callback stores installation tokens and creates login credentials.
-- Dashboard and settings are per-location.
-- Payments are handled through CRM integration and ITN/webhook processing.
-- Agency billing remains separate from sub-account CRM installs.
+One production domain serves three isolated GHL Marketplace apps: PayFast, Whop, and Swich. Each app has a dedicated OAuth callback, token/credential table, settings form, checkout, provider query, and callback/webhook namespace.
 
-## Core flow
-1. User installs the app from CRM.
-2. OAuth callback stores installation tokens and creates login credentials.
-3. `/settings` reads saved credentials for that `location_id`.
-4. CRM payment activity is handled via PayFast ITN and CRM sync routes.
+## Data stores
+- `payfast_ghl_installations`: PayFast OAuth, merchant credentials, environment, provider keys.
+- `whop_ghl_installations`: Whop OAuth, API/company/webhook credentials, conversion settings, provider keys.
+- `swich_ghl_installations`: Swich OAuth, separate live/sandbox credentials and checkout URLs, provider keys.
+- `payments`: shared transaction ledger; every standalone query filters by both `location_id` and `provider`.
+- `payment_refunds`, `payment_instruments`, `ghl_provider_subscriptions`: provider-aware supporting ledgers.
 
-## Important tables
-- `installations`
-- `installation_credentials`
-- `users`
-- `billing_invoices`
-- `merchant_applications`
-- `payments`
-- `processed_webhooks`
+## Request flow
+1. The gateway-specific OAuth callback stores tokens only in that app's table.
+2. The gateway-specific settings page saves only that provider's credentials.
+3. Provider provisioning registers the gateway-specific checkout and query URLs.
+4. Checkout creates a provider-tagged pending payment.
+5. A verified callback/webhook atomically moves it to a terminal state.
+6. The app sends the GHL server notification with that app's OAuth token and provider key.
+7. The embedded checkout sends exactly one JSON-string terminal message.
 
-## Key env vars
-- `GHL_CLIENT_ID`
-- `GHL_CLIENT_SECRET`
-- `NEXT_PUBLIC_APP_URL`
-- `SESSION_SECRET`
-- `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`
-- `NEXT_PUBLIC_ADMIN_PASSWORD`
+## Deployment order
+1. Deploy code.
+2. Run the provider SQL migration.
+3. Configure provider-specific `*_GHL_*` environment variables.
+4. Configure exact Marketplace and gateway webhook URLs.
+5. Test sandbox/test mode.
+6. Run one limited live transaction.
+7. Migrate locations gradually; retain rollback.
 
-## Notes
-- Local payment/catalog CRUD pages were removed from the final UI.
-- Always query by `location_id` for sub-account data.
+## Current limitations
+- Legacy combined routes remain for migration compatibility.
+- Swich endpoint/checksum/refund/subscription behavior requires confirmation from official merchant onboarding documents before production use.
+- Production E2E tests require real provider credentials and cannot be completed by CI alone.
