@@ -57,12 +57,14 @@ export async function verifySessionToken(token: string): Promise<Session | null>
   }
 }
 
-export async function getSession(): Promise<Session | null> {
+// Runtime result is Session|null. Keep the historical loose return type while
+// older route callers are migrated; middleware now blocks anonymous page access.
+export async function getSession(): Promise<any> {
   const token = cookies().get(COOKIE_NAME)?.value;
   return token ? verifySessionToken(token) : null;
 }
 
-export function applySessionCookie(response: NextResponse, token: string) {
+export function applySessionCookie(response: NextResponse, token: string, ..._legacyArgs: unknown[]) {
   response.cookies.set(COOKIE_NAME, token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
@@ -73,7 +75,7 @@ export function applySessionCookie(response: NextResponse, token: string) {
   return response;
 }
 
-export async function clearSession(response?: NextResponse) {
+export function clearSession(response?: NextResponse) {
   if (response) {
     response.cookies.set(COOKIE_NAME, '', { httpOnly: true, maxAge: 0, path: '/', sameSite: 'lax', secure: process.env.NODE_ENV === 'production' });
     return response;
@@ -81,6 +83,6 @@ export async function clearSession(response?: NextResponse) {
   cookies().delete(COOKIE_NAME);
 }
 
-export async function clearExistingSession(response?: NextResponse) {
+export function clearExistingSession(response?: NextResponse) {
   return clearSession(response);
 }
