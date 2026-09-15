@@ -7,9 +7,10 @@ Create a separate HighLevel Marketplace app for **PayFast Connect by 10x Digital
 - OAuth redirect: `https://payfast.10xdigitalventures.com/oauth/payfast/callback`
 - Custom settings page: `https://payfast.10xdigitalventures.com/apps/payfast/settings`
 - Payment page: `https://payfast.10xdigitalventures.com/apps/payfast/checkout`
-- PayFast ITN/return endpoint: `https://payfast.10xdigitalventures.com/api/payfast/itn`
+- Provider query URL: `https://payfast.10xdigitalventures.com/api/apps/payfast/query`
+- PayFast ITN/return endpoint: `https://payfast.10xdigitalventures.com/api/apps/payfast/itn`
 
-The same domain is used, but the PayFast app has its own OAuth identity, token table, settings surface, and provider registration.
+The same domain is used, but the PayFast app has its own OAuth identity, token/credential table, payment initiation, callback processing, query verification, and CRM notification token.
 
 ## Database migration
 
@@ -23,7 +24,7 @@ The migration creates `payfast_ghl_installations` and copies existing PayFast in
 
 ## Environment
 
-Set `PAYFAST_GHL_CLIENT_ID`, `PAYFAST_GHL_CLIENT_SECRET`, `PAYFAST_GHL_SHARED_SECRET`, `PAYFAST_GHL_APP_TOKEN`, and `PAYFAST_GHL_PROVIDER_LOGO_URL`. Do not reuse the Whop or Swich Marketplace credentials.
+Set `PAYFAST_GHL_CLIENT_ID`, `PAYFAST_GHL_CLIENT_SECRET`, `PAYFAST_GHL_SHARED_SECRET`, `PAYFAST_GHL_APP_TOKEN`, `PAYFAST_GHL_MARKETPLACE_APP_ID`, and `PAYFAST_GHL_PROVIDER_LOGO_URL`. Do not reuse Whop or Swich Marketplace credentials.
 
 ## Rollout
 
