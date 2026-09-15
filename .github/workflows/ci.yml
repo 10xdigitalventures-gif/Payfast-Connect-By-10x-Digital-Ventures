@@ -6,8 +6,34 @@ on:
   pull_request:
     branches: [ main ]
 
+env:
+  DB_HOST: 127.0.0.1
+  DB_PORT: 3306
+  DB_USER: payfast_test
+  DB_PASSWORD: payfast_test_password
+  DB_NAME: payfast_test
+  GHL_CLIENT_ID: test_client_id
+  GHL_CLIENT_SECRET: test_client_secret
+  PAYFAST_GHL_CLIENT_ID: test_payfast_client
+  PAYFAST_GHL_CLIENT_SECRET: test_payfast_secret
+  WHOP_GHL_CLIENT_ID: test_whop_client
+  WHOP_GHL_CLIENT_SECRET: test_whop_secret
+  SWICH_GHL_CLIENT_ID: test_swich_client
+  SWICH_GHL_CLIENT_SECRET: test_swich_secret
+  AGENCY_GHL_CLIENT_ID: test_agency_client_id
+  AGENCY_GHL_CLIENT_SECRET: test_agency_client_secret
+  NEXT_PUBLIC_APP_URL: http://localhost:3000
+  SESSION_SECRET: test_session_secret_at_least_32_chars
+
 jobs:
-  test-and-build:
+  verify-rollout:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify standalone rollout files
+        run: node scripts/verify-gateway-rollout.mjs --ci
+
+  tests:
     runs-on: ubuntu-latest
     services:
       mysql:
@@ -23,36 +49,13 @@ jobs:
           --health-interval=5s
           --health-timeout=2s
           --health-retries=10
-    env:
-      DB_HOST: 127.0.0.1
-      DB_PORT: 3306
-      DB_USER: payfast_test
-      DB_PASSWORD: payfast_test_password
-      DB_NAME: payfast_test
-      GHL_CLIENT_ID: test_client_id
-      GHL_CLIENT_SECRET: test_client_secret
-      PAYFAST_GHL_CLIENT_ID: test_payfast_client
-      PAYFAST_GHL_CLIENT_SECRET: test_payfast_secret
-      WHOP_GHL_CLIENT_ID: test_whop_client
-      WHOP_GHL_CLIENT_SECRET: test_whop_secret
-      SWICH_GHL_CLIENT_ID: test_swich_client
-      SWICH_GHL_CLIENT_SECRET: test_swich_secret
-      AGENCY_GHL_CLIENT_ID: test_agency_client_id
-      AGENCY_GHL_CLIENT_SECRET: test_agency_client_secret
-      NEXT_PUBLIC_APP_URL: http://localhost:3000
-      SESSION_SECRET: test_session_secret_at_least_32_chars
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-      - name: Install dependencies
-        run: npm ci
-      - name: Verify standalone rollout files
-        run: node scripts/verify-gateway-rollout.mjs --ci
+      - run: npm ci
       - name: Wait for MySQL
         run: |
           for i in {1..30}; do mysqladmin ping -h127.0.0.1 -P3306 -upayfast_test -ppayfast_test_password &>/dev/null && break || sleep 1; done
@@ -77,7 +80,15 @@ jobs:
             ADD COLUMN whop_rate_mode VARCHAR(20) DEFAULT 'fixed', ADD COLUMN whop_currency VARCHAR(10) DEFAULT 'PKR';
           ALTER TABLE billing_invoices ADD COLUMN provider VARCHAR(20) NOT NULL DEFAULT 'payfast' AFTER payment_id;
           SQL
-      - name: Run tests
-        run: npm test -- --runInBand
-      - name: Build
-        run: npm run build
+      - run: npm test -- --runInBand
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
