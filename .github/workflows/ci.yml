@@ -31,6 +31,12 @@ jobs:
       DB_NAME: payfast_test
       GHL_CLIENT_ID: test_client_id
       GHL_CLIENT_SECRET: test_client_secret
+      PAYFAST_GHL_CLIENT_ID: test_payfast_client
+      PAYFAST_GHL_CLIENT_SECRET: test_payfast_secret
+      WHOP_GHL_CLIENT_ID: test_whop_client
+      WHOP_GHL_CLIENT_SECRET: test_whop_secret
+      SWICH_GHL_CLIENT_ID: test_swich_client
+      SWICH_GHL_CLIENT_SECRET: test_swich_secret
       AGENCY_GHL_CLIENT_ID: test_agency_client_id
       AGENCY_GHL_CLIENT_SECRET: test_agency_client_secret
       NEXT_PUBLIC_APP_URL: http://localhost:3000
@@ -45,6 +51,8 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
+      - name: Verify standalone rollout files
+        run: node scripts/verify-gateway-rollout.mjs --ci
       - name: Wait for MySQL
         run: |
           for i in {1..30}; do mysqladmin ping -h127.0.0.1 -P3306 -upayfast_test -ppayfast_test_password &>/dev/null && break || sleep 1; done

@@ -1,7 +1,6 @@
-export async function getSession() {
-  // For unit tests we return a fixed agency session pointing to 'agency-loc'
-  return { locationId: 'agency-loc', installMode: 'agency' } as any;
-}
+import { cookies } from 'next/headers';
+import { SignJWT, jwtVerify } from 'jose';
+import type { NextResponse } from 'next/server';
 
 export type InstallMode = 'subaccount' | 'agency';
 export const InstallMode = {
@@ -9,18 +8,79 @@ export const InstallMode = {
   AGENCY: 'agency' as InstallMode,
 };
 
-// No-op helpers used by the app; real implementations exist in the full project.
-export function applySessionCookie(res: any, ...args: any[]) {
-  // In real runtime this sets session cookies; shim returns response for chaining
-  return res;
+export type Session = {
+  userId?: string | number;
+  username?: string;
+  role: 'user' | 'agency';
+  locationId: string;
+  installMode: InstallMode;
+};
+
+const COOKIE_NAME = 'pf_session';
+const MAX_AGE = 60 * 60 * 24 * 7;
+
+function sessionSecret() {
+  const value = String(process.env.SESSION_SECRET || '');
+  if (value.length < 32) throw new Error('SESSION_SECRET must be at least 32 characters');
+  return new TextEncoder().encode(value);
 }
 
-export function clearSession(res?: any) {
-  // Clears session cookie in real runtime; shim is no-op and returns response if provided
-  return res;
+export async function createSessionToken(input: Omit<Session, 'installMode'> & { installMode?: InstallMode }) {
+  return new SignJWT({
+    userId: input.userId,
+    username: input.username,
+    role: input.role,
+    locationId: input.locationId,
+    installMode: input.installMode || (input.role === 'agency' ? 'agency' : 'subaccount'),
+  })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setExpirationTime('7d')
+    .sign(sessionSecret());
 }
 
-export function clearExistingSession(res?: any) {
-  // Some routes call clearExistingSession before applying a new cookie
-  return res;
+export async function verifySessionToken(token: string): Promise<Session | null> {
+  try {
+    const { payload } = await jwtVerify(token, sessionSecret(), { algorithms: ['HS256'] });
+    const role = payload.role === 'agency' ? 'agency' : payload.role === 'user' ? 'user' : null;
+    const locationId = typeof payload.locationId === 'string' ? payload.locationId.trim() : '';
+    if (!role || !locationId) return null;
+    return {
+      userId: typeof payload.userId === 'string' || typeof payload.userId === 'number' ? payload.userId : undefined,
+      username: typeof payload.username === 'string' ? payload.username : undefined,
+      role,
+      locationId,
+      installMode: payload.installMode === 'agency' || role === 'agency' ? 'agency' : 'subaccount',
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function getSession(): Promise<Session | null> {
+  const token = cookies().get(COOKIE_NAME)?.value;
+  return token ? verifySessionToken(token) : null;
+}
+
+export function applySessionCookie(response: NextResponse, token: string) {
+  response.cookies.set(COOKIE_NAME, token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: MAX_AGE,
+    path: '/',
+  });
+  return response;
+}
+
+export async function clearSession(response?: NextResponse) {
+  if (response) {
+    response.cookies.set(COOKIE_NAME, '', { httpOnly: true, maxAge: 0, path: '/', sameSite: 'lax', secure: process.env.NODE_ENV === 'production' });
+    return response;
+  }
+  cookies().delete(COOKIE_NAME);
+}
+
+export async function clearExistingSession(response?: NextResponse) {
+  return clearSession(response);
 }
