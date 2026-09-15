@@ -1,3 +1,67 @@
-import {NextRequest,NextResponse} from 'next/server';import {query} from '@/lib/db';import {getAppUrlWithSearch} from '@/lib/app-url';import {getSwichOAuthConfig} from '@/lib/swich-ghl-token';
-function pick(...values:unknown[]){for(const value of values)if(typeof value==='string'&&value.trim())return value.trim();return null;}
-export async function GET(request:NextRequest){const code=request.nextUrl.searchParams.get('code');const error=request.nextUrl.searchParams.get('error');if(error||!code)return NextResponse.redirect(getAppUrlWithSearch(`/install?provider=swich&error=${encodeURIComponent(error||'access_denied')}`,request));const config=getSwichOAuthConfig();if(!config.clientId||!config.clientSecret)return NextResponse.redirect(getAppUrlWithSearch('/install?provider=swich&error=server_configuration',request));try{const response=await fetch('https://services.leadconnectorhq.com/oauth/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:config.clientId,client_secret:config.clientSecret,grant_type:'authorization_code',code,redirect_uri:config.redirectUri})});const raw=await response.text();const data=raw?JSON.parse(raw):null;if(!response.ok)throw new Error(`${response.status} ${raw.slice(0,200)}`);const access=pick(data?.access_token,data?.accessToken,data?.data?.access_token);const refresh=pick(data?.refresh_token,data?.refreshToken,data?.data?.refresh_token);const locationId=pick(data?.locationId,data?.location_id,data?.data?.locationId,request.nextUrl.searchParams.get('locationId'));const companyId=pick(data?.companyId,data?.company_id,data?.data?.companyId);if(!access||!refresh||!locationId)throw new Error('Missing OAuth fields');const expiry=new Date(Date.now()+Math.max(60,Number(data?.expires_in||3600))*1000);await query(`INSERT INTO swich_ghl_installations(location_id,company_id,access_token,refresh_token,expires_at,installed_at,updated_at) VALUES(?,?,?,?,?,NOW(),NOW()) ON DUPLICATE KEY UPDATE company_id=VALUES(company_id),access_token=VALUES(access_token),refresh_token=VALUES(refresh_token),expires_at=VALUES(expires_at),updated_at=NOW()`,[locationId,companyId,access,refresh,expiry]);return NextResponse.redirect(getAppUrlWithSearch(`/apps/swich/settings?locationId=${encodeURIComponent(locationId)}`,request));}catch(callbackError){console.error('[Swich OAuth] callback failed',callbackError);return NextResponse.redirect(getAppUrlWithSearch('/install?provider=swich&error=server_error',request));}}
+import { NextRequest, NextResponse } from 'next/server';
+import { query } from '@/lib/db';
+import { getAppUrlWithSearch } from '@/lib/app-url';
+import { getSwichOAuthConfig } from '@/lib/swich-ghl-token';
+
+function pick(...values: unknown[]) {
+  for (const value of values) if (typeof value === 'string' && value.trim()) return value.trim();
+  return null;
+}
+
+export async function GET(request: NextRequest) {
+  const code = request.nextUrl.searchParams.get('code');
+  const error = request.nextUrl.searchParams.get('error');
+  if (error || !code) {
+    return NextResponse.redirect(
+      getAppUrlWithSearch(`/install?provider=swich&error=${encodeURIComponent(error || 'access_denied')}`, request),
+    );
+  }
+
+  const config = getSwichOAuthConfig();
+  if (!config.clientId || !config.clientSecret || !config.redirectUri.startsWith('http')) {
+    return NextResponse.redirect(getAppUrlWithSearch('/install?provider=swich&error=server_configuration', request));
+  }
+
+  try {
+    const response = await fetch('https://services.leadconnectorhq.com/oauth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: config.clientId,
+        client_secret: config.clientSecret,
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: config.redirectUri,
+      }),
+    });
+    const raw = await response.text();
+    let data: any = null;
+    try { data = raw ? JSON.parse(raw) : null; } catch { throw new Error(`Token exchange returned non-JSON: ${raw.slice(0, 200)}`); }
+    if (!response.ok) throw new Error(`${response.status} ${raw.slice(0, 200)}`);
+
+    const access = pick(data?.access_token, data?.accessToken, data?.data?.access_token);
+    const refresh = pick(data?.refresh_token, data?.refreshToken, data?.data?.refresh_token);
+    const locationId = pick(
+      data?.locationId, data?.location_id, data?.data?.locationId,
+      request.nextUrl.searchParams.get('locationId'), request.nextUrl.searchParams.get('location_id'),
+    );
+    const companyId = pick(data?.companyId, data?.company_id, data?.data?.companyId);
+    if (!access || !refresh || !locationId) throw new Error('Missing OAuth fields');
+    const expiry = new Date(Date.now() + Math.max(60, Number(data?.expires_in || 3600)) * 1000);
+
+    await query(
+      `INSERT INTO swich_ghl_installations
+        (location_id,company_id,access_token,refresh_token,expires_at,installed_at,updated_at)
+       VALUES(?,?,?,?,?,NOW(),NOW())
+       ON DUPLICATE KEY UPDATE company_id=VALUES(company_id),access_token=VALUES(access_token),
+         refresh_token=VALUES(refresh_token),expires_at=VALUES(expires_at),updated_at=NOW()`,
+      [locationId, companyId, access, refresh, expiry],
+    );
+    return NextResponse.redirect(
+      getAppUrlWithSearch(`/apps/swich/settings?locationId=${encodeURIComponent(locationId)}`, request),
+    );
+  } catch (callbackError) {
+    console.error('[Swich OAuth] callback failed', callbackError);
+    return NextResponse.redirect(getAppUrlWithSearch('/install?provider=swich&error=server_error', request));
+  }
+}
