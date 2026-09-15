@@ -1,43 +1,22 @@
 # Application Sitemap & URL Map
 
-## User / Merchant
-| URL | Purpose | Access |
-| :--- | :--- | :--- |
-| `/dashboard` | CRM dashboard | User |
-| `/settings` | GoPayFast credentials and CRM automation | User |
-| `/billing` | Agency billing overview | User |
-| `/billing/plans` | Billing plans | User |
-| `/billing/suspended` | Suspended notice | User |
-| `/install` | CRM install flow | Public |
-| `/login` | User login | Public |
+## Standalone gateway apps
+| App | OAuth callback | Settings | Checkout | Query | Callback/webhook |
+| --- | --- | --- | --- | --- | --- |
+| PayFast | `/oauth/payfast/callback` | `/apps/payfast/settings` | `/apps/payfast/checkout` | `/api/apps/payfast/query` | `/api/apps/payfast/itn` |
+| Whop | `/oauth/whop/callback` | `/apps/whop/settings` | `/apps/whop/checkout` | `/api/apps/whop/query` | `/api/apps/whop/webhook` |
+| Swich | `/oauth/swich/callback` | `/apps/swich/settings` | `/apps/swich/checkout` | `/api/apps/swich/query` | `/api/apps/swich/callback` |
 
-## Agency
-| URL | Purpose | Access |
-| :--- | :--- | :--- |
-| `/agency` | Agency billing console | Agency |
-| `/agency/install` | Agency install flow | Public/Agency |
-| `/agency/login` | Agency login | Public |
+## Shared application
+| URL | Purpose |
+| --- | --- |
+| `/dashboard` | CRM dashboard |
+| `/billing` | Agency billing overview |
+| `/install` | Marketplace install entry |
+| `/agency` | Agency console |
+| `/apply` | Merchant application |
+| `/support` | Support contacts |
+| `/docs` | Documentation links |
 
-## Public
-| URL | Purpose | Access |
-| :--- | :--- | :--- |
-| `/apply` | Merchant application form | Public |
-| `/support` | Support contacts | Public |
-| `/docs` | Documentation links | Public |
-| `/pay/[token]` | Public payment page | Public |
-| `/pay/success` | Payment success page | Public |
-| `/invoice/[token]` | Public invoice page | Public |
-
-## GHL / CRM
-| URL | Purpose | Access |
-| :--- | :--- | :--- |
-| `/checkout` | CRM checkout iframe | CRM |
-| `/checkout/success` | CRM success page | CRM |
-| `/payfast-config` | CRM provider config page | CRM |
-| `/oauth/callback` | OAuth callback endpoint | CRM |
-
-## Admin
-| URL | Purpose | Access |
-| :--- | :--- | :--- |
-| `/admin` | Admin dashboard | Admin |
-| `/admin/login` | Admin login | Public |
+## Legacy migration routes
+`/checkout`, `/payfast-config`, `/oauth/callback`, `/api/ghl/pay`, `/api/payfast/itn`, and the combined settings routes remain temporarily for existing installations. New apps must not use them.
