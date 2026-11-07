@@ -24,3 +24,11 @@ The checkout URL, field names, checksum source string, callback statuses, refund
 3. Test success, decline, cancellation, timeout, amount mismatch, invalid checksum, and duplicate callback delivery.
 4. Confirm the GHL receipt advances from the JSON-string success message.
 5. Run one limited live transaction only after Swich approves the integration.
+
+
+## Marketplace user context (security branch)
+- Configure custom page URL as `https://payfast.10xdigitalventures.com/apps/swich/settings?locationId={{location.id}}`.
+- Configure the SWICH app's own `SWICH_GHL_SHARED_SECRET`, 32+ character `SESSION_SECRET`, and correct `NEXT_PUBLIC_APP_URL`.
+- The settings page now requests HighLevel encrypted parent user context, passes it to backend SSO verification, and uses a short-lived SWICH/location-bound bearer rather than relying on iframe cookies.
+- Standalone SWICH HighLevel OAuth and custom-provider calls use `Version: v3`.
+- **SWICH checksum, hosted checkout and callback contract remain BLOCKED** until provider-issued merchant documentation and sandbox fixtures are received. No production transactions.
