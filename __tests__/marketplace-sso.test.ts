@@ -83,6 +83,15 @@ describe('Marketplace signed-context session bootstrap', () => {
     expect((await POST(ssoRequest({ ...payload, locationId: 'location-A' }))).status).toBe(403);
   });
 
+  it('rejects non-admin HighLevel users even inside an installed subaccount', async () => {
+    const response = await POST(ssoRequest({
+      provider: 'payfast', locationId: 'location-A',
+      encryptedData: encryptedContext({ ...validContext, role: 'user' }),
+    }));
+    expect(response.status).toBe(403);
+    expect(db).not.toHaveBeenCalled();
+  });
+
   it('rejects anonymous or agency-only encrypted context and absent installation', async () => {
     const payload = { provider: 'payfast', locationId: 'location-A' };
     expect((await POST(ssoRequest({ ...payload, encryptedData: encryptedContext({ companyId: 'company-A' }) }))).status).toBe(401);
