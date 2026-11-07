@@ -8,7 +8,7 @@ Status: **PARTIAL; no production approval.** Scope: standalone PayFast, Whop, SW
 - Provider creation: POST, `locationId` query, body `name,description,paymentsUrl,queryUrl,imageUrl,supportsSubscriptionSchedule`. Removed redundant `locationId` from creation bodies.
 - Connection: POST, `locationId` query, body `live` and `test` key objects. Removed undocumented `liveMode` body property in PayFast provisioner.
 - Capabilities: PUT, body `supportsSubscriptionSchedules` and `locationId` or `companyId`.
-- Migrated three standalone provisioning clients from `Version: 2021-07-28` to `Version: v3`. OAuth/token flows, notifications, other GHL calls and legacy combined app **not yet migrated or certified**.
+- Migrated three standalone provisioning clients from `Version: 2021-07-28` to `Version: v3`. Standalone OAuth code exchanges and refresh calls now send `Version: v3`, per official `POST /oauth/token` contract. Legacy combined app, other GHL API surfaces, notifications and end-to-end compatibility are **not certified**.
 - Official HighLevel payment integration guide: Marketplace OAuth; custom settings iframe; checkout iframe events; server-side query operations `verify`, `refund`, `list_payment_methods`, `charge_payment`, `create_subscription`, `cancel_subscription`; signed notification, sandbox tests. Compare each implemented handler before enabling capabilities.
 
 References:
@@ -54,3 +54,31 @@ References:
 - Execute Jest + Next.js build + GHL sandbox install/provision/connect/checkout/verify/refund tests for each supported capability.
 - Re-audit security, payment state transitions, cross-tenant isolation, token refresh and database migrations.
 - Keep main and production unchanged until tests and approval.
+
+## Additional review: HighLevel OAuth v3, Marketplace SSO and standalone checkout (2026-11-07)
+
+### Documented GHL OAuth token request
+- `POST https://services.leadconnectorhq.com/oauth/token` requires header `Version: v3`, body `application/x-www-form-urlencoded` with `client_id`, `client_secret`, `grant_type`, and either `code` (authorization code) or `refresh_token`. `redirect_uri` is supported.
+- v3 response includes `access_token`, `refresh_token`, `expires_in` and `locationId` for a Sub-Account token. Three standalone callbacks derive tenant context from this response, not URL query fallbacks.
+- The above version header is now added to PayFast, Whop and SWICH callback exchanges and refreshers. Test suites cover v3 refresh and custom-provider calls, but are **not executed**.
+- Official reference: https://marketplace.gohighlevel.com/docs/ghl/oauth/get-access-token/
+
+### Marketplace custom page identity contract (critical)
+- A Custom Page is embedded in a HighLevel iframe; URL placeholders such as `{{location.id}}` supply **context**, not authenticated authorization.
+- HighLevel's documented secure Custom Page flow sends a `REQUEST_USER_DATA` parent `postMessage`, receives `REQUEST_USER_DATA_RESPONSE` with `encryptedData`, and validates/decrypts it on the backend using the per-app Shared Secret. The trusted decrypted `activeLocation` and user identity are used for authorization.
+- Our standalone settings pages currently read `?locationId=` and call APIs gated by the legacy `pf_session` cookie. This cannot be considered compatible or secure GHL Marketplace SSO until the official signed user-context flow is integrated and browser iframe cookie behavior is tested.
+- The source origin and `event.source` should also be validated where feasible, taking actual HighLevel and whitelabel domains into account.
+- References:
+  - https://marketplace.gohighlevel.com/docs/marketplace-modules/CustomPages/index.html
+  - https://marketplace.gohighlevel.com/docs/2021-07-28/other/user-context-marketplace-apps/index.html
+
+### Checkout isolation and callback origins
+- Standalone `app/apps/whop/checkout/page.tsx` currently re-exports the merged `app/checkout/page.tsx`; merged page allows both PayFast and Whop selection. This violates intended app-specific checkout isolation. SWICH has a separate checkout page.
+- Both PayFast and SWICH return popups previously sent `postMessage` to `'*'`; they now use only the trusted `NEXT_PUBLIC_APP_URL` origin and fail closed if it is unconfigured or unsafe. This does **not** fix inbound iframe event source validation; separate work needed.
+- The original `app/checkout/page.tsx` and SWICH standalone checkout currently accept `payment_initiate_props` from unverified `message` senders. This is an authorization and integrity risk; do not fix by hardcoding a single GHL domain without checking supported whitelabel deployment.
+- Regression tests added for cancellation redirects and popup origin, plus contract tests for GHL v3 provisioning and OAuth refresh; CI results remain unverified.
+- HighLevel workflow: https://marketplace.gohighlevel.com/docs/marketplace-modules/Payments/
+
+### Legacy services remain
+- `lib/ghl.ts` and `app/oauth/callback/route.ts` belong to the legacy combined app and still use previous header/no header patterns. Route-specific compatibility analysis and backward-compatible rollout are required before updating production users.
+- Do not infer that every GHL endpoint can be migrated by simply adding a `/v3` URL prefix. Consult its individual v3 reference and test request/response behavior.
