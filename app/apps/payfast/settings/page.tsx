@@ -1,5 +1,6 @@
-import { getGatewayMarketplaceToken } from '@/lib/marketplace-settings-client';
 'use client';
+import { getGatewayMarketplaceToken } from '@/lib/marketplace-settings-client';
+
 
 import { useEffect, useState, type CSSProperties } from 'react';
 
