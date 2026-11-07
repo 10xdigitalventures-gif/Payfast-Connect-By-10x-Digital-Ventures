@@ -12,6 +12,7 @@ Status definitions: OPEN / IN PROGRESS / FIXED UNVERIFIED / VERIFIED / BLOCKED. 
 | ID | Priority | Finding / evidence | Required acceptance criteria | Status |
 |---|---|---|---|---|
 | SEC-01 | Critical | All three app/oauth/*/callback/route.ts handlers lack visible OAuth state verification | Cryptographic one-time state bound to provider/session and expiry; reject absent/replayed/mismatched state; tests | OPEN |
+| SEC-05 | Critical | app/auth/launch/route.ts trusts URL location/company IDs without verified user identity; applySessionCookie invocation mismatches lib/session.ts signature | Require verified GHL signed launch/session or authenticated identity; reject unauthenticated restore; regression tests for forged location/company and valid launch | OPEN |
 | SEC-02 | Critical | app/apps/whop/settings/page.tsx and swich equivalent rely on locationId query; backend config endpoints not yet inspected | Server-side authenticated location membership; deny cross-location read/write; tests | OPEN |
 | SEC-03 | High | OAuth and provider credentials stored in installation tables; application encryption not yet verified | Verify encryption at rest and application secret handling; never echo secrets | OPEN |
 | PAY-01 | High | app/api/apps/payfast/itn/route.ts unsigned browser cancellation can change payment state | Browser redirects cannot authoritatively transition payment; signed server callback reconciliation and tests | OPEN |
@@ -25,8 +26,8 @@ Status definitions: OPEN / IN PROGRESS / FIXED UNVERIFIED / VERIFIED / BLOCKED. 
 
 ## Work sequence
 1. Inventory repository tree, dependencies, CI, current deployment and existing tests. Record baseline commit and actual execution results.
-2. SEC-01 OAuth state flow: inspect install initiators; implement shared secure state service and provider-specific callback validation; add negative tests; independent re-review.
-3. SEC-02 settings API authorization; SEC-03 credential handling; SEC-04 refresh concurrency.
+2. SEC-05 session launch identity and SEC-01 OAuth state flow: inspect install initiators; implement shared secure state service and provider-specific callback validation; add negative tests; independent re-review.
+3. SEC-02 settings API authorization after SEC-05 verified; SEC-03 credential handling; SEC-04 refresh concurrency.
 4. PAY-01 and PAY-02 payment browser/callback security; verify provider signatures and amounts.
 5. REL-01 durable notification delivery and idempotent reconciliation.
 6. DB-01 migration compatibility and rollback safety.
