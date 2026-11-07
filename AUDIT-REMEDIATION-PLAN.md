@@ -16,13 +16,19 @@ Status definitions: OPEN / IN PROGRESS / FIXED UNVERIFIED / VERIFIED / BLOCKED. 
 | SEC-02 | Critical | PayFast, Whop, SWICH app/api/apps/*/config/route.ts exposed secrets by locationId alone and accepted writes without authentication | Server-side authenticated location membership; deny cross-location read/write; tests | FIXED UNVERIFIED — all three GET/POST handlers gated by session location; Marketplace session integration and tests pending |
 | SEC-03 | High | OAuth and provider credentials stored in installation tables; application encryption not yet verified | Verify encryption at rest and application secret handling; never echo secrets | OPEN |
 | PAY-01 | High | app/api/apps/payfast/itn/route.ts unsigned browser cancellation can change payment state | Browser redirects cannot authoritatively transition payment; signed server callback reconciliation and tests | FIXED UNVERIFIED — unsigned cancellation DB mutation removed (89fa80f); regression and sandbox tests pending |
-| PAY-02 | High | app/api/apps/payfast/itn/route.ts and swich callback use postMessage target '*' | Strict known origin and receiver validation | OPEN |
+| PAY-02 | High | PayFast and SWICH callback popups sent postMessage to wildcard '*' | Strict known origin and receiver validation | IN PROGRESS — sender now pins configured HTTPS app origin (75c1f4c, 792395a, 1904885); receiver source/origin validation and tests still pending |
 | REL-01 | High | PayFast/Whop/SWICH notification claim synced_ghl=-1 can become stuck | Durable retry queue, recover stale claims, classify terminal failures, tests | OPEN |
 | DB-01 | High | scripts/whop-standalone-app.sql and whop-ghl-provider-compliance-migration.sql use ADD COLUMN IF NOT EXISTS / CREATE INDEX IF NOT EXISTS | MySQL-compatible idempotent migration verified on actual version | OPEN |
 | SEC-04 | Medium | lib/*-ghl-token.ts refresh logic lacks visible concurrency control | Race-safe token refresh and rotation tests | OPEN |
 | SWI-01 | Blocker | SWICH merchant-specific official API/checksum/status contract not confirmed | Official provider fixture validation and sandbox approval | BLOCKED |
 | QA-01 | High | scripts/verify-gateway-rollout.mjs checks files/env only | CI build, unit/integration tests, signed webhook fixtures, GHL sandbox end-to-end | OPEN |
 | ARCH-01 | Medium | Legacy combined routes retained | Verify isolation, migration compatibility, deprecation plan | OPEN |
+| GHL-01 | High | Standalone settings pages rely on legacy pf_session; official Marketplace custom-page context uses signed/encrypted REQUEST_USER_DATA_RESPONSE | Implement per-app Shared Secret verification/decryption and session bootstrap; enforce activeLocation/user rights and verify iframe cookie operation | OPEN |
+| GHL-02 | High | OAuth token/provisioning version headers were legacy/absent | Version v3 on documented standalone OAuth token exchange/refresh and provider API, integration/sandbox tests | FIXED UNVERIFIED — standalone headers migrated; v3 request contract Jest tests added but not executed |
+| GHL-03 | High | Checkout event receivers accept payment_initiate_props without validating message sender | Verify allowed HighLevel parent origins, event.source and tenant binding without breaking documented whitelabel iframe flow | OPEN |
+| ARCH-02 | High | Whop standalone checkout page exports shared PayFast/Whop checkout with merged routing | Ensure standalone Whop checkout only initiates Whop and uses app-specific authenticated payment status | OPEN |
+| PAY-03 | High | PayFast ITN verifies signature but does not reconcile callback amount/currency against stored charge or provider transaction | Obtain official Pakistan IPG callbacks/verification contract; fail closed on mismatches; signed fixtures and sandbox results | OPEN |
+
 
 ## Work sequence
 1. Inventory repository tree, dependencies, CI, current deployment and existing tests. Record baseline commit and actual execution results.
