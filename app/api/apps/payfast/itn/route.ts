@@ -27,8 +27,10 @@ async function processCallback(request: NextRequest, payload: Record<string, str
   if (!payments.length) return new NextResponse('Payment not found', { status: 404 });
   const payment = payments[0];
 
+  // Browser return parameters are not authenticated payment notifications.
+  // A cancellation redirect may inform the popup, but MUST NOT mutate a
+  // pending transaction. Only a verified PayFast ITN can finalize payment.
   if (redirect === 'Y' && cancelled && !value(payload, 'validation_hash', 'VALIDATION_HASH')) {
-    await query(`UPDATE payments SET status='failed',raw_itn=?,updated_at=NOW() WHERE id=? AND status='pending'`, [JSON.stringify({ cancelled: true }), payment.id]);
     return popup(payment.status === 'complete' ? 'complete' : 'cancelled');
   }
 
