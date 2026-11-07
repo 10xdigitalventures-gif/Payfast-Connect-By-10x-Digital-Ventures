@@ -9,7 +9,9 @@ type Config = {
   merchant_name: string;
   store_id: string;
   merchant_key: string;
+  has_merchant_key?: boolean;
   passphrase: string;
+  has_passphrase?: boolean;
   environment: 'live' | 'sandbox';
 };
 
@@ -54,6 +56,7 @@ export default function PayfastSettingsPage() {
       });
       const data = await response.json();
       if (!response.ok || !data.success) throw new Error(data.error || 'Could not save PayFast settings.');
+      setConfig(current => ({ ...current, merchant_key: '', passphrase: '', has_merchant_key: true, has_passphrase: !!current.passphrase || !!current.has_passphrase }));
       setState('saved');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save PayFast settings.');
@@ -80,10 +83,10 @@ export default function PayfastSettingsPage() {
 
         <div style={{ display: 'grid', gap: 16, marginTop: 24 }}>
           <label style={field}>Merchant ID<input style={input} value={config.merchant_id} onChange={(e) => set('merchant_id', e.target.value)} /></label>
-          <label style={field}>Merchant Key<input style={input} type="password" value={config.merchant_key} onChange={(e) => set('merchant_key', e.target.value)} /></label>
+          <label style={field}>{config.has_merchant_key ? 'Merchant Key (saved — enter new key to replace)' : 'Merchant Key'}<input style={input} type="password" value={config.merchant_key} onChange={(e) => set('merchant_key', e.target.value)} /></label>
           <label style={field}>Merchant / Store Name<input style={input} value={config.merchant_name} onChange={(e) => set('merchant_name', e.target.value)} /></label>
           <label style={field}>Store ID (optional)<input style={input} value={config.store_id} onChange={(e) => set('store_id', e.target.value)} /></label>
-          <label style={field}>Passphrase / Shared Secret (optional)<input style={input} type="password" value={config.passphrase} onChange={(e) => set('passphrase', e.target.value)} /></label>
+          <label style={field}>{config.has_passphrase ? 'Passphrase / Shared Secret (saved — enter to replace)' : 'Passphrase / Shared Secret (optional)'}<input style={input} type="password" value={config.passphrase} onChange={(e) => set('passphrase', e.target.value)} /></label>
         </div>
 
         <div style={{ marginTop: 24, padding: 12, borderRadius: 8, background: '#eff6ff', color: '#1e40af', fontSize: 13 }}>
