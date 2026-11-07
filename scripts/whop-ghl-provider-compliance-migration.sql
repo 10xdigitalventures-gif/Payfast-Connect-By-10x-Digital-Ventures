@@ -1,24 +1,73 @@
 -- GoPayFast + Whop / HighLevel custom-provider compliance migration
--- Run this ONCE in the same production database used by the application.
--- MySQL 8+ required (ADD COLUMN IF NOT EXISTS).
+-- MySQL 8.0 compatible and safe to run repeatedly. No unsupported
+-- ADD COLUMN IF NOT EXISTS or CREATE INDEX IF NOT EXISTS syntax.
+-- Run against the intended database (metadata queries use DATABASE()).
 
--- 1) Scope every saved payment method to a HighLevel contact and gateway identity.
-ALTER TABLE payment_instruments
-  ADD COLUMN IF NOT EXISTS contact_id VARCHAR(100) NULL AFTER location_id,
-  ADD COLUMN IF NOT EXISTS provider VARCHAR(20) NOT NULL DEFAULT 'payfast' AFTER contact_id,
-  ADD COLUMN IF NOT EXISTS provider_customer_id VARCHAR(120) NULL AFTER provider,
-  ADD COLUMN IF NOT EXISTS provider_payment_method_id VARCHAR(120) NULL AFTER provider_customer_id;
+-- 1) Scope saved payment methods to a HighLevel contact and gateway identity.
+-- Idempotent column: payment_instruments.contact_id
+SET @migration_sql := IF(
+  EXISTS(SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='payment_instruments' AND COLUMN_NAME='contact_id'),
+  'DO 0',
+  'ALTER TABLE payment_instruments ADD COLUMN contact_id VARCHAR(100) NULL AFTER location_id'
+);
+PREPARE migration_stmt FROM @migration_sql;
+EXECUTE migration_stmt;
+DEALLOCATE PREPARE migration_stmt;
 
-CREATE INDEX IF NOT EXISTS idx_payment_instruments_contact
-  ON payment_instruments (location_id, contact_id, provider);
-CREATE INDEX IF NOT EXISTS idx_payment_instruments_provider_method
-  ON payment_instruments (location_id, contact_id, provider, provider_payment_method_id);
+-- Idempotent column: payment_instruments.provider
+SET @migration_sql := IF(
+  EXISTS(SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='payment_instruments' AND COLUMN_NAME='provider'),
+  'DO 0',
+  'ALTER TABLE payment_instruments ADD COLUMN provider VARCHAR(20) NOT NULL DEFAULT ''payfast'' AFTER contact_id'
+);
+PREPARE migration_stmt FROM @migration_sql;
+EXECUTE migration_stmt;
+DEALLOCATE PREPARE migration_stmt;
 
--- Existing instruments predate contact mapping. They deliberately remain contact_id=NULL
--- and are never returned by the HighLevel list_payment_methods endpoint.
-UPDATE payment_instruments
-SET provider = 'payfast'
-WHERE provider IS NULL OR provider = '';
+-- Idempotent column: payment_instruments.provider_customer_id
+SET @migration_sql := IF(
+  EXISTS(SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='payment_instruments' AND COLUMN_NAME='provider_customer_id'),
+  'DO 0',
+  'ALTER TABLE payment_instruments ADD COLUMN provider_customer_id VARCHAR(120) NULL AFTER provider'
+);
+PREPARE migration_stmt FROM @migration_sql;
+EXECUTE migration_stmt;
+DEALLOCATE PREPARE migration_stmt;
+
+-- Idempotent column: payment_instruments.provider_payment_method_id
+SET @migration_sql := IF(
+  EXISTS(SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='payment_instruments' AND COLUMN_NAME='provider_payment_method_id'),
+  'DO 0',
+  'ALTER TABLE payment_instruments ADD COLUMN provider_payment_method_id VARCHAR(120) NULL AFTER provider_customer_id'
+);
+PREPARE migration_stmt FROM @migration_sql;
+EXECUTE migration_stmt;
+DEALLOCATE PREPARE migration_stmt;
+
+-- Idempotent index: payment_instruments.idx_payment_instruments_contact
+SET @migration_sql := IF(
+  EXISTS(SELECT 1 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='payment_instruments' AND INDEX_NAME='idx_payment_instruments_contact'),
+  'DO 0',
+  'CREATE INDEX idx_payment_instruments_contact ON payment_instruments (location_id,contact_id,provider)'
+);
+PREPARE migration_stmt FROM @migration_sql;
+EXECUTE migration_stmt;
+DEALLOCATE PREPARE migration_stmt;
+
+-- Idempotent index: payment_instruments.idx_payment_instruments_provider_method
+SET @migration_sql := IF(
+  EXISTS(SELECT 1 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='payment_instruments' AND INDEX_NAME='idx_payment_instruments_provider_method'),
+  'DO 0',
+  'CREATE INDEX idx_payment_instruments_provider_method ON payment_instruments (location_id,contact_id,provider,provider_payment_method_id)'
+);
+PREPARE migration_stmt FROM @migration_sql;
+EXECUTE migration_stmt;
+DEALLOCATE PREPARE migration_stmt;
+
+-- Existing instruments predate contact mapping and remain contact_id=NULL;
+-- they are not eligible for list_payment_methods.
+UPDATE payment_instruments SET provider='payfast'
+WHERE provider IS NULL OR provider='';
 
 -- 2) Persist HighLevel and Whop subscription linkage for checkout-based subscriptions.
 CREATE TABLE IF NOT EXISTS ghl_provider_subscriptions (
@@ -63,8 +112,25 @@ CREATE TABLE IF NOT EXISTS payment_refunds (
   KEY idx_payment_refunds_provider_refund (provider_refund_id)
 );
 
+
 -- 4) Helpful lookups used by verify/refund/webhook handlers.
-CREATE INDEX IF NOT EXISTS idx_payments_ghl_verify
-  ON payments (location_id, custom_str3, pf_payment_id);
-CREATE INDEX IF NOT EXISTS idx_payments_contact_provider
-  ON payments (location_id, contact_id, provider, status);
+-- Idempotent index: payments.idx_payments_ghl_verify
+SET @migration_sql := IF(
+  EXISTS(SELECT 1 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='payments' AND INDEX_NAME='idx_payments_ghl_verify'),
+  'DO 0',
+  'CREATE INDEX idx_payments_ghl_verify ON payments (location_id,custom_str3,pf_payment_id)'
+);
+PREPARE migration_stmt FROM @migration_sql;
+EXECUTE migration_stmt;
+DEALLOCATE PREPARE migration_stmt;
+
+-- Idempotent index: payments.idx_payments_contact_provider
+SET @migration_sql := IF(
+  EXISTS(SELECT 1 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='payments' AND INDEX_NAME='idx_payments_contact_provider'),
+  'DO 0',
+  'CREATE INDEX idx_payments_contact_provider ON payments (location_id,contact_id,provider,status)'
+);
+PREPARE migration_stmt FROM @migration_sql;
+EXECUTE migration_stmt;
+DEALLOCATE PREPARE migration_stmt;
+
