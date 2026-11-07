@@ -82,3 +82,21 @@ References:
 ### Legacy services remain
 - `lib/ghl.ts` and `app/oauth/callback/route.ts` belong to the legacy combined app and still use previous header/no header patterns. Route-specific compatibility analysis and backward-compatible rollout are required before updating production users.
 - Do not infer that every GHL endpoint can be migrated by simply adding a `/v3` URL prefix. Consult its individual v3 reference and test request/response behavior.
+
+## Implementation update: Marketplace admin SSO + Whop standalone checkout (2026-11-07)
+
+### Marketplace SSO code (not yet integration-tested)
+- Added `lib/marketplace-sso.ts` to decrypt the documented CryptoJS OpenSSL-compatible AES-256-CBC passphrase ciphertext **on the backend only**, with each app's separate `*_GHL_SHARED_SECRET`.
+- Added `POST /api/marketplace/session`: validates same-origin browser request; decrypts SSO; requires GHL `role=admin`, active location, matched OAuth installation and matching company if present; issues a 15-minute provider/location-scoped HS256 token with separate key derivation, issuer and audience.
+- Updated PayFast/Whop/SWICH custom settings pages to request GHL `REQUEST_USER_DATA_RESPONSE`, then use provider/location-scoped bearer tokens for API GET/POST rather than third-party cookies. Admin settings opened outside GHL iframe fail closed; legacy cookie path remains temporarily for legacy sessions.
+- Warning: HighLevel SSO context is encrypted using a documented CryptoJS format with no independently verified freshness/nonce binding. Replay, iframe-origin absence/whitelabel variations, subaccount permission differences and actual SSO fixture tests are outstanding.
+- References: https://marketplace.gohighlevel.com/docs/2021-07-28/other/user-context-marketplace-apps/index.html ; https://marketplace.gohighlevel.com/docs/marketplace-modules/CustomPages/index.html
+
+### Whop-only checkout code (not yet payment-tested)
+- Replaced `app/apps/whop/checkout/page.tsx` shared export with an isolated Whop-only checkout. Supports payment and setup initiation messages, recurring-plan initiation, hosted checkout popup, webhook-backed status polling, and completion/cancel/error responses. The page checks message source against `window.parent` and referrer origin when present.
+- `POST /api/apps/whop/pay` and `/setup` now require the location's registered public provider key; setup additionally issues random status token. `GET /api/apps/whop/status` returns minimal statuses only when provider, location, basket and random token match. The status endpoint never updates payment state.
+- **Integrity gate:** `lib/ghl-whop-order-attestation.ts` calls GHL API v3 `GET /payments/orders/{orderId}?altId={locationId}&locationId={locationId}` with the installed app's sub-account OAuth token. Checks order ID, location, contact (where present), currency, amount and paid status. Missing `orderId` fails closed to prevent arbitrary browser amounts. This may block channels that don't expose a GHL order ID; test all channel payloads before deployment.
+- Pending: GHL transaction-to-order binding, duplicated checkout idempotency, signed Whop webhook amount/currency and event mapping fixtures, GHL partial payments/refunds, subscriptions/renewals, setup method persistence, official live/sandbox compatibility, build & Jest execution.
+- Reference: https://marketplace.gohighlevel.com/docs/ghl/payments/get-order-by-id/index.html ; https://marketplace.gohighlevel.com/docs/marketplace-modules/Payments/
+
+All changes are on `audit/security-hardening-2026-11`. No merge, deployment, live transaction or passing-test claim.
