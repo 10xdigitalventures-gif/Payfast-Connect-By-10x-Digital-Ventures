@@ -4,8 +4,10 @@ import { POST as setup } from '../app/api/apps/whop/setup/route';
 import { query } from '../lib/db';
 import { attestWhopGhlOrder } from '../lib/ghl-whop-order-attestation';
 import { createWhopCheckout, createWhopSetupCheckout } from '../lib/whop';
+import { withWhopCheckoutLock } from '../lib/whop-checkout-lock';
 
 jest.mock('../lib/db', () => ({ query: jest.fn() }));
+jest.mock('../lib/whop-checkout-lock', () => ({ withWhopCheckoutLock: jest.fn(async (_location: string, _order: string, work: () => Promise<unknown>) => work()) }));
 jest.mock('../lib/ghl-whop-order-attestation', () => ({ attestWhopGhlOrder: jest.fn() }));
 jest.mock('../lib/whop', () => ({
   convertPkrToUsd: jest.fn(() => 100),
@@ -16,6 +18,7 @@ jest.mock('../lib/whop', () => ({
   createWhopSetupCheckout: jest.fn(),
 }));
 const db = query as jest.Mock;
+const checkoutLock = withWhopCheckoutLock as jest.Mock;
 const verify = attestWhopGhlOrder as jest.Mock;
 const checkout = createWhopCheckout as jest.Mock;
 const cardSetup = createWhopSetupCheckout as jest.Mock;
@@ -40,10 +43,15 @@ describe('standalone Whop checkout initiation', () => {
   const oldUrl = process.env.NEXT_PUBLIC_APP_URL;
   beforeEach(() => {
     process.env.NEXT_PUBLIC_APP_URL = 'https://gateway.example.test';
-    db.mockReset().mockImplementation(async (sql: string) => sql.trim().startsWith('SELECT')
-      ? [{ whop_api_key: 'sk-whop', whop_company_id: 'company-A',
-        provider_publishable_key: 'pk-whop-A', whop_currency: 'USD' }]
-      : { affectedRows: 1 });
+    db.mockReset().mockImplementation(async (sql: string) => {
+      if (sql.includes("FROM payments")) return [];
+      if (sql.trim().startsWith('SELECT')) return [{
+        whop_api_key: 'sk-whop', whop_company_id: 'company-A',
+        provider_publishable_key: 'pk-whop-A', whop_currency: 'USD',
+      }];
+      return { affectedRows: 1 };
+    });
+    checkoutLock.mockReset().mockImplementation(async (_location: string, _order: string, work: () => Promise<unknown>) => work());
     verify.mockReset().mockResolvedValue({ ok: true });
     checkout.mockReset().mockResolvedValue({
       ok: true, checkoutUrl: 'https://whop.com/checkout/example', checkoutId: 'checkout-A',
@@ -88,6 +96,35 @@ describe('standalone Whop checkout initiation', () => {
     expect(checkout).toHaveBeenCalledTimes(1);
     expect(checkout.mock.calls[0][0].metadata.app).toBe('whop');
     expect(verify).toHaveBeenCalledWith(expect.objectContaining({ amount: 100, currency: 'USD', orderId: 'order-A' }));
+  });
+
+  it('rejects second checkout for the same GHL order before calling Whop again', async () => {
+    let priorOrderSeen = false;
+    db.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM payments')) {
+        const seen = priorOrderSeen;
+        priorOrderSeen = true;
+        return seen ? [{ id: 55, status: 'pending' }] : [];
+      }
+      if (sql.trim().startsWith('SELECT')) return [{
+        whop_api_key: 'sk-whop', whop_company_id: 'company-A',
+        provider_publishable_key: 'pk-whop-A', whop_currency: 'USD',
+      }];
+      return { affectedRows: 1 };
+    });
+    const first = await pay(request('/api/apps/whop/pay', payBody));
+    const second = await pay(request('/api/apps/whop/pay', payBody));
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(409);
+    expect(checkout).toHaveBeenCalledTimes(1);
+    expect(checkoutLock).toHaveBeenCalledWith('loc-A', 'order-A', expect.any(Function));
+  });
+
+  it('fails closed if it cannot acquire a checkout creation lock', async () => {
+    checkoutLock.mockRejectedValueOnce(new Error('lock unavailable'));
+    const response = await pay(request('/api/apps/whop/pay', payBody));
+    expect(response.status).toBe(503);
+    expect(checkout).not.toHaveBeenCalled();
   });
 
   it('binds setup to Whop public key and returns an unguessable status token', async () => {
