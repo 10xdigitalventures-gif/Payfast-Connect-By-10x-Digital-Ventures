@@ -15,7 +15,12 @@ function expectedParentOrigin() {
   catch { return '*'; }
 }
 function tellHighLevel(data: Record<string, unknown>) {
-  if (window.parent !== window) window.parent.postMessage(JSON.stringify(data), expectedParentOrigin());
+  if (window.parent !== window) {
+    // Existing HighLevel checkout client sends readiness as JSON string and
+    // terminal responses as objects. Preserve that compatible event encoding.
+    const message = data.type === 'custom_provider_ready' ? JSON.stringify(data) : data;
+    window.parent.postMessage(message, expectedParentOrigin());
+  }
 }
 function checkedWhopUrl(value: unknown): string | null {
   try {
