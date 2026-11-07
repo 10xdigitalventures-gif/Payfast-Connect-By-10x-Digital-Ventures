@@ -27,7 +27,7 @@ export async function GET(request: NextRequest) {
   try {
     const tokenResponse = await fetch('https://services.leadconnectorhq.com/oauth/token', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Version: 'v3' },
       body: new URLSearchParams({
         client_id: config.clientId,
         client_secret: config.clientSecret,
