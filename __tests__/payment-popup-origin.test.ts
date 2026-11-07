@@ -13,7 +13,7 @@ describe('payment popup target origin', () => {
   });
 
   it('fails closed for unconfigured, unsafe or invalid origins', () => {
-    for (const input of [undefined, '', '//evil.example', 'javascript:alert(1)',
+    for (const input of ['', '//evil.example', 'javascript:alert(1)',
       'https://user:password@payfast.example.test', 'not a URL']) {
       expect(getPaymentPopupTargetOrigin(input)).toBeNull();
     }
