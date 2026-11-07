@@ -93,13 +93,24 @@ PREPARE migration_stmt FROM @migration_sql;
 EXECUTE migration_stmt;
 DEALLOCATE PREPARE migration_stmt;
 
--- Backfill nullable legacy credentials once; never overwrite existing
--- dedicated Whop values. Mode/rate/fee/currency are NOT NULL defaults, so
--- a rerun must not import legacy configuration over administrator settings.
-UPDATE whop_ghl_installations w
+-- Older combined installations optionally included Whop settings. A clean
+-- standalone deployment may have none of these legacy columns; skip safely.
+-- Never overwrite previously configured standalone credentials on reruns.
+SET @migration_sql := IF(
+  (SELECT COUNT(DISTINCT COLUMN_NAME)
+   FROM information_schema.COLUMNS
+   WHERE TABLE_SCHEMA=DATABASE()
+     AND TABLE_NAME='installations'
+     AND COLUMN_NAME IN ('whop_api_key','whop_company_id','whop_webhook_secret','whop_enabled')) = 4,
+  'UPDATE whop_ghl_installations w
 JOIN installations i ON i.location_id=w.location_id
 SET w.whop_api_key=COALESCE(w.whop_api_key,i.whop_api_key),
     w.whop_company_id=COALESCE(w.whop_company_id,i.whop_company_id),
     w.whop_webhook_secret=COALESCE(w.whop_webhook_secret,i.whop_webhook_secret)
 WHERE i.whop_enabled=1
-  AND (w.whop_api_key IS NULL OR w.whop_company_id IS NULL OR w.whop_webhook_secret IS NULL);
+  AND (w.whop_api_key IS NULL OR w.whop_company_id IS NULL OR w.whop_webhook_secret IS NULL)',
+  'DO 0'
+);
+PREPARE migration_stmt FROM @migration_sql;
+EXECUTE migration_stmt;
+DEALLOCATE PREPARE migration_stmt;
