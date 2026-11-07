@@ -100,3 +100,19 @@ References:
 - Reference: https://marketplace.gohighlevel.com/docs/ghl/payments/get-order-by-id/index.html ; https://marketplace.gohighlevel.com/docs/marketplace-modules/Payments/
 
 All changes are on `audit/security-hardening-2026-11`. No merge, deployment, live transaction or passing-test claim.
+
+## 2026-11-07 follow-up: native Marketplace OAuth state and Whop checkout idempotency
+
+### SEC-01 Marketplace state compatibility
+Official HighLevel Marketplace app installation docs describe a backend redirect with a `code` query parameter. They do not guarantee a developer-chosen `state` value in that native install-link callback. HighLevel's separate **External Authentication OAuth** documentation uses `{{bundle.state}}` for a different OAuth direction (HighLevel as client of an external provider); that does **not** establish state semantics for our GHL Marketplace app installation. Until the actual native install-link callback can be tested, reject untrusted tenant query fallbacks (already removed) but do not turn on mandatory state checks that may reject every legitimate install.
+- https://marketplace.gohighlevel.com/docs/Authorization/OAuth2.0/
+- https://marketplace.gohighlevel.com/docs/oauth/external-auth/OAuth2/index.html
+
+### WHOP-01 duplicate-payment checkout prevention
+`POST /api/apps/whop/pay` now runs a per-tenant/per-verified-order critical section using MySQL `GET_LOCK` on a dedicated connection. Inside the lock it searches existing Whop payments for matching `item_description.orderId` using JSON_VALID-safe extraction; if a row exists in **any status** it returns 409 and does not initiate another Whop hosted checkout. This blocks concurrent double-clicks, multi-instance retries and subsequent attempts, rather than risking duplicate charges. The lock is released with `RELEASE_LOCK` on the same MySQL connection in a `finally` block; database/lock outages fail closed.
+Important trade-offs:
+- Old persisted payments without `orderId` metadata are not detected and require migration/reconciliation.
+- A failed order cannot be retried automatically. It must first be reconciled and explicitly reset by an authenticated administrator using an audited retry procedure (not implemented).
+- An attacker able to forge client-side order context is not stopped by the lock alone; v3 order amount/tenant attestation and GHL transaction/source binding also matter.
+- MySQL GET_LOCK serialization is not a replacement for provider-side idempotency keys, if available for the exact Whop API version.
+- No live transactions have been performed.
