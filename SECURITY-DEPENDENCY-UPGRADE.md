@@ -26,3 +26,15 @@ GitHub Actions npm audit (PR #25, run 42371280286) using the lockfile on main re
 - https://nextjs.org/docs/app/guides/upgrading/version-16
 - https://nextjs.org/blog/nextjs-security-update-october-14-2026
 - https://docs.npmjs.com/cli/commands/npm-audit/
+
+## Verified upgraded-branch results
+PR #25 CI run 42371673021 on the Next 16.4.5 + React 19.3.1 lockfile:
+- Production npm audit: **0 critical, 0 high, 0 moderate, 0 low**.
+- Full dependency npm audit: **0 critical, 0 high, 0 moderate, 7 low** (development tooling).
+- GitHub Actions unit/integration tests: **PASSED**.
+- Next.js 16.4.5 production build and TypeScript checks: **PASSED**.
+- Standalone rollout checks: **PASSED**.
+- Updated Next 16 async `cookies()` in lib/session.ts, async route params, and TypeScript/React JSX settings.
+- Lockfile was regenerated using exact React/Next versions and compatible npm audit fixes; temporary write-capable workflow removed after use.
+
+**Release gating remains:** The above verifies GitHub source on CI, **not** Hostinger's deployed Node runtime, actual deployed dependency snapshot, auth sessions, live payment/webhook events, or payment provider compatibility. PR stays draft for deployment/sandbox verification. PR #23 separately contains unmerged payment integration changes.
