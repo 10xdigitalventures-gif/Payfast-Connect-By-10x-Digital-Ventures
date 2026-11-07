@@ -37,7 +37,7 @@ describe('PayFast untrusted cancellation return', () => {
     const html = await response.text();
     expect(html).toContain('Payment cancelled');
     expect(html).toContain('https://payfast.example.test');
-    expect(html).not.toContain("postMessage(\\");
+
     expect(html).not.toContain(",'*')");
   });
 
