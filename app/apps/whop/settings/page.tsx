@@ -1,3 +1,4 @@
+import { getGatewayMarketplaceToken } from '@/lib/marketplace-settings-client';
 'use client';
 import { useEffect,useState,type CSSProperties } from 'react';
 type Config={whop_api_key:string;whop_company_id:string;whop_webhook_secret:string;whop_rate_mode:'fixed'|'live';whop_exchange_rate:string;whop_fee_percent:string;whop_currency:'PKR'|'USD'};
@@ -5,9 +6,9 @@ const empty:Config={whop_api_key:'',whop_company_id:'',whop_webhook_secret:'',wh
 export default function WhopSettings(){
  const[locationId,setLocationId]=useState('');const[config,setConfig]=useState(empty);const[state,setState]=useState('loading');const[error,setError]=useState('');
  useEffect(()=>{const id=new URLSearchParams(window.location.search).get('locationId')||'';if(!id){setError('Open this Whop app from HighLevel Payments → Integrations.');setState('ready');return;}setLocationId(id);
- fetch(`/api/apps/whop/config?locationId=${encodeURIComponent(id)}`,{cache:'no-store'}).then(r=>r.json()).then(d=>{if(d?.installed)setConfig({...empty,...d});}).catch(()=>setError('Could not load Whop settings.')).finally(()=>setState('ready'));},[]);
+ getGatewayMarketplaceToken('whop', id).then(token => fetch(`/api/apps/whop/config?locationId=${encodeURIComponent(id)}`, { cache: 'no-store', headers: { Authorization: `Bearer ${token}` } })).then(r=>{if(!r.ok)throw new Error('HighLevel session rejected');return r.json();}).then(d=>{if(d?.installed)setConfig({...empty,...d});}).catch(()=>setError('Could not load Whop settings.')).finally(()=>setState('ready'));},[]);
  const set=(key:keyof Config,value:string)=>setConfig(current=>({...current,[key]:value}));
- async function save(){setState('saving');setError('');try{const response=await fetch('/api/apps/whop/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...config,locationId})});const data=await response.json();if(!response.ok||!data.success)throw new Error(data.error||'Save failed');setState('saved');}catch(e){setError(e instanceof Error?e.message:'Save failed');setState('ready');}}
+ async function save(){setState('saving');setError('');try{const token=await getGatewayMarketplaceToken('whop',locationId);const response=await fetch('/api/apps/whop/config',{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},body:JSON.stringify({...config,locationId})});const data=await response.json();if(!response.ok||!data.success)throw new Error(data.error||'Save failed');setState('saved');}catch(e){setError(e instanceof Error?e.message:'Save failed');setState('ready');}}
  const field:CSSProperties={display:'grid',gap:6};const input:CSSProperties={padding:11,border:'1px solid #cbd5e1',borderRadius:8};
  return <main style={{minHeight:'100vh',background:'#f8fafc',padding:24,fontFamily:'system-ui'}}><section style={{maxWidth:620,margin:'0 auto',background:'#fff',padding:28,borderRadius:16,border:'1px solid #e2e8f0'}}>
  <h1>10x Whop App</h1><p style={{color:'#64748b'}}>Whop-only settings. PayFast and Swich are configured in their own apps.</p><div style={{display:'grid',gap:16}}>
