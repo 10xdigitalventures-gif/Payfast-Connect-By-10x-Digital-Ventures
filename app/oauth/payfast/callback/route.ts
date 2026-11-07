@@ -43,14 +43,13 @@ export async function GET(request: NextRequest) {
 
     const accessToken = pickString(tokens?.access_token, tokens?.accessToken, tokens?.data?.access_token, tokens?.data?.accessToken);
     const refreshToken = pickString(tokens?.refresh_token, tokens?.refreshToken, tokens?.data?.refresh_token, tokens?.data?.refreshToken);
+    // Only the verified OAuth token response may establish the installation location.
     const locationId = pickString(
       tokens?.locationId, tokens?.location_id, tokens?.data?.locationId, tokens?.data?.location_id,
       tokens?.user?.locationId, tokens?.user?.location_id,
-      request.nextUrl.searchParams.get('locationId'), request.nextUrl.searchParams.get('location_id'),
     );
     const companyId = pickString(
       tokens?.companyId, tokens?.company_id, tokens?.data?.companyId, tokens?.data?.company_id,
-      request.nextUrl.searchParams.get('companyId'), request.nextUrl.searchParams.get('company_id'),
     );
     if (!accessToken || !refreshToken || !locationId) throw new Error('OAuth response is missing token or location fields');
     const expiresAt = new Date(Date.now() + Math.max(60, Number(tokens?.expires_in || tokens?.expiresIn || 3600)) * 1000);
