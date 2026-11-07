@@ -18,7 +18,7 @@ describe('agency-proxy helpers', () => {
     expect(normalized.page).toBe(1);
     expect(normalized.per_page).toBe(2);
     expect(normalized.has_more).toBe(true);
-    expect(normalized.links.next).toBe(2);
+    expect(normalized.links?.next).toBe(2);
   });
 
   test('normalizeUpstreamResponse handles object with data and total', () => {
@@ -29,6 +29,6 @@ describe('agency-proxy helpers', () => {
     expect(normalized.per_page).toBe(5);
     expect(Array.isArray(normalized.items)).toBeTruthy();
     expect(normalized.has_more).toBe(false);
-    expect(normalized.links.next).toBeNull();
+    expect(normalized.links?.next).toBeNull();
   });
 });
