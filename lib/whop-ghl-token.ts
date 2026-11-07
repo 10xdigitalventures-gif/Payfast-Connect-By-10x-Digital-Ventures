@@ -20,7 +20,7 @@ export async function getValidWhopGhlToken(locationId: string): Promise<string |
   if (!config.clientId || !config.clientSecret) return null;
   try {
     const response = await fetch(TOKEN_URL, {
-      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Version: 'v3' },
       body: new URLSearchParams({ client_id: config.clientId, client_secret: config.clientSecret,
         grant_type: 'refresh_token', refresh_token: String(installation.refresh_token) }),
     });
