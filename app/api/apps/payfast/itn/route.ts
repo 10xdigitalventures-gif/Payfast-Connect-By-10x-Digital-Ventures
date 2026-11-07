@@ -28,7 +28,8 @@ async function processCallback(request: NextRequest, payload: Record<string, str
   const payment = payments[0];
 
   if (redirect === 'Y' && cancelled && !value(payload, 'validation_hash', 'VALIDATION_HASH')) {
-    await query(`UPDATE payments SET status='failed',raw_itn=?,updated_at=NOW() WHERE id=? AND status='pending'`, [JSON.stringify({ cancelled: true }), payment.id]);
+    // Browser cancellation redirects are not authenticated payment notifications.
+    // Never transition a pending transaction from an unsigned browser query.
     return popup(payment.status === 'complete' ? 'complete' : 'cancelled');
   }
 
