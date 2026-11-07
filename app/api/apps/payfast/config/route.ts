@@ -1,3 +1,4 @@
+import { authorizeGatewayLocation } from '@/lib/gateway-settings-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { provisionPayfastProvider } from '@/lib/payfast-ghl-provider';
@@ -9,6 +10,8 @@ function validLocation(value: unknown): value is string {
 export async function GET(request: NextRequest) {
   const locationId = request.nextUrl.searchParams.get('locationId');
   if (!validLocation(locationId)) return NextResponse.json({ installed: false });
+  const access = await authorizeGatewayLocation('payfast', locationId);
+  if (!access.ok) return access.response;
   const rows = await query<any[]>(
     `SELECT merchant_id, merchant_name, store_id, merchant_key, passphrase, environment,
             access_token IS NOT NULL AS oauth_connected
@@ -33,6 +36,8 @@ export async function POST(request: NextRequest) {
   const body = await request.json();
   const locationId = body.locationId;
   if (!validLocation(locationId)) return NextResponse.json({ error: 'A valid HighLevel location is required.' }, { status: 400 });
+  const access = await authorizeGatewayLocation('payfast', locationId);
+  if (!access.ok) return access.response;
   const merchantId = String(body.merchant_id || '').trim();
   const merchantKey = String(body.merchant_key || '').trim();
   if (!merchantId || !merchantKey) return NextResponse.json({ error: 'Merchant ID and Merchant Key are required.' }, { status: 400 });
