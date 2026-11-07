@@ -3,7 +3,7 @@ import { query } from './db';
 import { getValidPayfastToken } from './payfast-ghl-token';
 
 const GHL_API = 'https://services.leadconnectorhq.com';
-const VERSION = '2021-07-28';
+const VERSION = 'v3';
 function appUrl(path: string) { return `${(process.env.NEXT_PUBLIC_APP_URL || '').replace(/\/$/, '')}${path}`; }
 async function ghlRequest(path: string, token: string, method: 'POST' | 'PUT', body: unknown) {
   const response = await fetch(`${GHL_API}${path}`, { method, headers: { Authorization: `Bearer ${token}`, Version: VERSION,
@@ -25,14 +25,14 @@ export async function provisionPayfastProvider(locationId: string, mode: 'live' 
   if (!token) return { ok: false, reason: 'missing_payfast_app_token' as const };
   try {
     const provider = await ghlRequest(`/payments/custom-provider/provider?${new URLSearchParams({ locationId })}`, token, 'POST', {
-      name: 'PayFast Connect by 10x Digital Ventures', description: 'Dedicated PayFast Pakistan payment provider', locationId,
+      name: 'PayFast Connect by 10x Digital Ventures', description: 'Dedicated PayFast Pakistan payment provider',
       paymentsUrl: appUrl('/apps/payfast/checkout'),
       queryUrl: `${appUrl('/api/apps/payfast/query')}?locationId=${encodeURIComponent(locationId)}`,
       imageUrl: process.env.PAYFAST_GHL_PROVIDER_LOGO_URL || appUrl('/logo.png'), supportsSubscriptionSchedule: true,
     });
     const keys = await ensureKeys(locationId); const providerConfig = { apiKey: keys.apiKey, publishableKey: keys.publishableKey };
     const connection = await ghlRequest(`/payments/custom-provider/connect?${new URLSearchParams({ locationId })}`, token, 'POST',
-      { live: providerConfig, test: providerConfig, liveMode: mode === 'live' });
+      { live: providerConfig, test: providerConfig });
     const capabilities = await ghlRequest('/payments/custom-provider/capabilities', token, 'PUT',
       { supportsSubscriptionSchedules: true, locationId });
     return { ok: true, provider, connection, capabilities };
