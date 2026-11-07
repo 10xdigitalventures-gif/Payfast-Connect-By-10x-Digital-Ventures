@@ -1,9 +1,19 @@
+import { timingSafeEqual } from 'node:crypto';
 import {NextRequest,NextResponse} from 'next/server';
 import {query} from '@/lib/db';
 import {generateToken} from '@/lib/tokens';
 import {convertPkrToUsd,calculateFeePkr,createWhopCheckout,resolveExchangeRate,billingPeriodDaysForFrequency} from '@/lib/whop';
-export async function POST(request:NextRequest){const body=await request.json();const{locationId,contactId,ghlTransactionId,invoiceId,orderId,subscriptionId,amount,description,nameFirst,nameLast,email}=body;if(!locationId||!amount||!email)return NextResponse.json({error:'locationId, amount, email required'},{status:400});
+export async function POST(request:NextRequest){const body=await request.json();const{locationId,contactId,ghlTransactionId,invoiceId,orderId,subscriptionId,amount,description,nameFirst,nameLast,email}=body;if(!locationId||!email||!Number.isFinite(Number(amount))||Number(amount)<=0)return NextResponse.json({error:'Valid location, amount and email required'},{status:400});
  const rows=await query<any[]>('SELECT * FROM whop_ghl_installations WHERE location_id=? LIMIT 1',[locationId]);const inst=rows[0];if(!inst?.whop_api_key||!inst?.whop_company_id)return NextResponse.json({error:'Whop is not configured in the standalone Whop app.'},{status:400});
+ const expectedKey=String(inst.provider_publishable_key||'');
+ const suppliedKey=String(body.publishableKey||'');
+ if(!expectedKey||expectedKey.length!==suppliedKey.length||
+    !timingSafeEqual(Buffer.from(expectedKey),Buffer.from(suppliedKey))){
+   return NextResponse.json({error:'Invalid Whop provider context'},{status:403});
+ }
+ if(!['PKR','USD'].includes(String(body.currency||inst.whop_currency||'PKR').toUpperCase())){
+   return NextResponse.json({error:'Unsupported Whop payment currency'},{status:400});
+ }
  const total=Number(amount);const fee=Number(inst.whop_fee_percent??10);const currency=String(body.currency||inst.whop_currency||'PKR').toUpperCase();let rate=1;let rateSource:'fixed'|'live'='fixed';let usdAmount:number;
  if(currency==='USD')usdAmount=convertPkrToUsd(total,fee,1);else{const resolved=await resolveExchangeRate(inst.whop_rate_mode,Number(inst.whop_exchange_rate||280));rate=resolved.rate;rateSource=resolved.source;usdAmount=convertPkrToUsd(total,fee,rate);}
  const recurring=!!subscriptionId||body.isRecurring===true||body.mode==='subscription';const interval=Math.max(1,Number(body.intervalCount||1));const days=recurring?billingPeriodDaysForFrequency(body.frequency||body.interval)*interval:null;const basketId=`WHOP-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;const payToken=generateToken(16);
