@@ -45,6 +45,12 @@ export async function POST(request: NextRequest) {
   let context;
   try { context = decryptMarketplaceUserContext(body?.encryptedData, secret); }
   catch { return NextResponse.json({ error: 'Invalid HighLevel user context' }, { status: 401 }); }
+  // Merchant credentials are privileged configuration. Do not grant a
+  // settings token to an ordinary location user merely because they can open
+  // the iframe; require a GHL administrator context.
+  if (context.role !== 'admin') {
+    return NextResponse.json({ error: 'HighLevel administrator access required' }, { status: 403 });
+  }
   if (context.activeLocation !== expectedLocation) {
     return NextResponse.json({ error: 'HighLevel location mismatch' }, { status: 403 });
   }
