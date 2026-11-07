@@ -1,5 +1,6 @@
-import { getGatewayMarketplaceToken } from '@/lib/marketplace-settings-client';
 'use client';
+import { getGatewayMarketplaceToken } from '@/lib/marketplace-settings-client';
+
 import { useEffect,useState,type CSSProperties } from 'react';
 type Config={whop_api_key:string;whop_company_id:string;whop_webhook_secret:string;whop_rate_mode:'fixed'|'live';whop_exchange_rate:string;whop_fee_percent:string;whop_currency:'PKR'|'USD'};
 const empty:Config={whop_api_key:'',whop_company_id:'',whop_webhook_secret:'',whop_rate_mode:'fixed',whop_exchange_rate:'280',whop_fee_percent:'10',whop_currency:'PKR'};
