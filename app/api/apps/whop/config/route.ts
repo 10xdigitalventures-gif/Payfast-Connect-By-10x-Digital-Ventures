@@ -6,7 +6,7 @@ import { provisionWhopProvider } from '@/lib/whop-ghl-provider';
 function location(value:unknown):value is string{return typeof value==='string'&&!!value.trim()&&!value.includes('{');}
 export async function GET(request:NextRequest){
   const locationId=request.nextUrl.searchParams.get('locationId'); if(!location(locationId))return NextResponse.json({installed:false});
-  const access = await authorizeGatewayLocation('whop', locationId);
+  const access = await authorizeGatewayLocation('whop', locationId, request);
   if (!access.ok) return access.response;
   const rows=await query<any[]>(`SELECT whop_api_key,whop_company_id,whop_webhook_secret,whop_rate_mode,whop_exchange_rate,
     whop_fee_percent,whop_currency,access_token IS NOT NULL AS oauth_connected FROM whop_ghl_installations WHERE location_id=? LIMIT 1`,[locationId]);
@@ -17,7 +17,7 @@ export async function GET(request:NextRequest){
 }
 export async function POST(request:NextRequest){
   const body=await request.json(); const locationId=body.locationId; if(!location(locationId))return NextResponse.json({error:'Valid location required'},{status:400});
-  const access = await authorizeGatewayLocation('whop', locationId);
+  const access = await authorizeGatewayLocation('whop', locationId, request);
   if (!access.ok) return access.response;
   if(!String(body.whop_api_key||'').trim()||!String(body.whop_company_id||'').trim())return NextResponse.json({error:'Whop API key and Company ID are required'},{status:400});
   const rows=await query<any[]>('SELECT access_token FROM whop_ghl_installations WHERE location_id=? LIMIT 1',[locationId]);
