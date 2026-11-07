@@ -81,6 +81,8 @@ export default function WhopCheckout() {
         subscriptionId: String(data.subscriptionId || ''),
         description: String(data.description || ''),
       };
+      window.clearInterval(interval);
+      window.clearTimeout(timeout);
       setContext(next); setName(next.name); setEmail(next.email);
       setError(''); setReceipt(null); setStage('ready'); done.current = false;
     };
@@ -89,7 +91,13 @@ export default function WhopCheckout() {
     const interval = window.setInterval(ready, 750);
     const timeout = window.setTimeout(() => {
       window.clearInterval(interval);
-      setStage(previous => previous === 'loading' ? 'failed' : previous);
+      setStage(previous => {
+        if (previous === 'loading') {
+          setError('No payment context received. Open this checkout from HighLevel.');
+          return 'failed';
+        }
+        return previous;
+      });
     }, 15000);
     return () => { window.removeEventListener('message', handler); window.clearInterval(interval); window.clearTimeout(timeout); };
   }, []);
