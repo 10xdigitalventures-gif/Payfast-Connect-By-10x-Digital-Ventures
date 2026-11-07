@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 'audit/security-hardening-2026-11' ]
   pull_request:
     branches: [ main ]
 
