@@ -8,7 +8,7 @@ export async function POST(request:NextRequest){const body=await request.json();
  const rows=await query<any[]>('SELECT * FROM whop_ghl_installations WHERE location_id=? LIMIT 1',[locationId]);const inst=rows[0];if(!inst?.whop_api_key||!inst?.whop_company_id)return NextResponse.json({error:'Whop is not configured in the standalone Whop app.'},{status:400});
  const expectedKey=String(inst.provider_publishable_key||'');
  const suppliedKey=String(body.publishableKey||'');
- if(!expectedKey||expectedKey.length!==suppliedKey.length||
+ if(!expectedKey||!/^[A-Za-z0-9_-]{1,255}$/.test(suppliedKey)||expectedKey.length!==suppliedKey.length||
     !timingSafeEqual(Buffer.from(expectedKey),Buffer.from(suppliedKey))){
    return NextResponse.json({error:'Invalid Whop provider context'},{status:403});
  }
