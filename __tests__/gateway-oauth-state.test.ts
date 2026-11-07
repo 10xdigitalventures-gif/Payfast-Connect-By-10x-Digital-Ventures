@@ -17,7 +17,7 @@ describe('gateway OAuth state', () => {
     const state = createGatewayOAuthState('swich', secret, nonce, now);
     expect(verifyGatewayOAuthState(null, 'swich', secret, nonce, now)).toBe(false);
     expect(verifyGatewayOAuthState(state, 'swich', secret, 'differentnonceabcdefghijklmnopqrstuvwxyz12', now)).toBe(false);
-    expect(verifyGatewayOAuthState(state.slice(0, -1) + 'X', 'swich', secret, nonce, now)).toBe(false);
+    expect(verifyGatewayOAuthState(state.slice(0, -1) + (state.endsWith('A') ? 'B' : 'A'), 'swich', secret, nonce, now)).toBe(false);
   });
   it('rejects expired and future states', () => {
     const state = createGatewayOAuthState('whop', secret, nonce, now);
