@@ -1,3 +1,4 @@
+import { getGatewayMarketplaceToken } from '@/lib/marketplace-settings-client';
 'use client';
 
 import { useEffect, useState, type CSSProperties } from 'react';
@@ -27,8 +28,9 @@ export default function PayfastSettingsPage() {
       return;
     }
     setLocationId(id);
-    fetch(`/api/apps/payfast/config?locationId=${encodeURIComponent(id)}`, { cache: 'no-store' })
-      .then((response) => response.json())
+    getGatewayMarketplaceToken('payfast', id)
+      .then((token) => fetch(`/api/apps/payfast/config?locationId=${encodeURIComponent(id)}`, { cache: 'no-store', headers: { Authorization: `Bearer ${token}` } }))
+      .then((response) => { if (!response.ok) throw new Error('HighLevel session rejected'); return response.json(); })
       .then((data) => { if (data?.installed) setConfig({ ...empty, ...data }); })
       .catch(() => setError('Could not load PayFast settings.'))
       .finally(() => setState('ready'));
@@ -43,9 +45,10 @@ export default function PayfastSettingsPage() {
     setState('saving');
     setError('');
     try {
+      const token = await getGatewayMarketplaceToken('payfast', locationId);
       const response = await fetch('/api/apps/payfast/config', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ ...config, locationId }),
       });
       const data = await response.json();
