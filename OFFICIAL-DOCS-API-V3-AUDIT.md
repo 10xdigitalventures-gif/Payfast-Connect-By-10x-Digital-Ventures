@@ -116,3 +116,14 @@ Important trade-offs:
 - An attacker able to forge client-side order context is not stopped by the lock alone; v3 order amount/tenant attestation and GHL transaction/source binding also matter.
 - MySQL GET_LOCK serialization is not a replacement for provider-side idempotency keys, if available for the exact Whop API version.
 - No live transactions have been performed.
+
+## SEC-03 write-only gateway secrets (2026-11-07)
+
+- PayFast `GET /api/apps/payfast/config` no longer selects or returns merchant_key/passphrase; it returns `has_merchant_key` and `has_passphrase` flags. Blank password fields on POST preserve saved credentials. Use explicit administrative rotation for replacements.
+- Whop `GET /api/apps/whop/config` no longer returns whop_api_key/whop_webhook_secret; it returns `has_whop_api_key` and `has_whop_webhook_secret`. Empty submitted secret fields preserve stored values.
+- SWICH `GET /api/apps/swich/config` no longer selects or returns either live_secret_key or sandbox_secret_key; flags indicate saved credentials. Blank POST fields preserve each environment's stored key.
+- All three frontend settings pages show masked/saved hints and clear their locally entered password inputs after successful POST. Tests added for absence of secret echo and empty-save preservation.
+- **Residual risk:** this protects the HTTP settings read surface; it is **not encryption at rest**. Gateway and OAuth tokens remain stored in the database and must be encrypted using envelope encryption or an external KMS with key rotation before production approval. Provider provisioning errors and logs should also be checked for accidental secret exposure.
+
+### Verification constraints
+New PR #23 head commits following the previous green run still need fresh CI results. The GitHub connector used here returned no PR-triggered workflow runs for the latest commit; it does not establish a failure or a pass. PR #23 remains draft. Do not merge the full security branch without re-running CI, sandbox integration tests, and resolving critical security blockers.
