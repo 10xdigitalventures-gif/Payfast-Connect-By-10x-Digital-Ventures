@@ -13,8 +13,10 @@ export async function GET(request: NextRequest) {
   const access = await authorizeGatewayLocation('payfast', locationId, request);
   if (!access.ok) return access.response;
   const rows = await query<any[]>(
-    `SELECT merchant_id, merchant_name, store_id, merchant_key, passphrase, environment,
-            access_token IS NOT NULL AS oauth_connected
+    `SELECT merchant_id, merchant_name, store_id,
+            (merchant_key IS NOT NULL AND merchant_key <> '') AS has_merchant_key,
+            (passphrase IS NOT NULL AND passphrase <> '') AS has_passphrase,
+            environment, access_token IS NOT NULL AS oauth_connected
        FROM payfast_ghl_installations WHERE location_id=? LIMIT 1`,
     [locationId],
   );
@@ -26,8 +28,10 @@ export async function GET(request: NextRequest) {
     merchant_id: row.merchant_id || '',
     merchant_name: row.merchant_name || '',
     store_id: row.store_id || '',
-    merchant_key: row.merchant_key || '',
-    passphrase: row.passphrase || '',
+    merchant_key: '',
+    has_merchant_key: !!row.has_merchant_key,
+    passphrase: '',
+    has_passphrase: !!row.has_passphrase,
     environment: row.environment === 'live' ? 'live' : 'sandbox',
   });
 }
@@ -39,15 +43,21 @@ export async function POST(request: NextRequest) {
   const access = await authorizeGatewayLocation('payfast', locationId, request);
   if (!access.ok) return access.response;
   const merchantId = String(body.merchant_id || '').trim();
-  const merchantKey = String(body.merchant_key || '').trim();
-  if (!merchantId || !merchantKey) return NextResponse.json({ error: 'Merchant ID and Merchant Key are required.' }, { status: 400 });
-
   const installation = await query<any[]>(
-    'SELECT id, access_token FROM payfast_ghl_installations WHERE location_id=? LIMIT 1',
+    'SELECT id, access_token, merchant_key, passphrase FROM payfast_ghl_installations WHERE location_id=? LIMIT 1',
     [locationId],
   );
   if (!installation.length || !installation[0].access_token) {
     return NextResponse.json({ error: 'Install the standalone PayFast GHL app before saving gateway credentials.' }, { status: 409 });
+  }
+  // The settings page never receives plaintext secrets on GET. A blank
+  // password field means retain its existing value, not erase the merchant.
+  const merchantKey = String(body.merchant_key || '').trim() ||
+    String(installation[0].merchant_key || '').trim();
+  const passphrase = body.clear_passphrase === true ? null :
+    String(body.passphrase || '').trim() || installation[0].passphrase || null;
+  if (!merchantId || !merchantKey) {
+    return NextResponse.json({ error: 'Merchant ID and Merchant Key are required.' }, { status: 400 });
   }
 
   const environment = body.environment === 'live' ? 'live' : 'sandbox';
@@ -55,7 +65,7 @@ export async function POST(request: NextRequest) {
     `UPDATE payfast_ghl_installations
         SET merchant_id=?, merchant_name=?, store_id=?, merchant_key=?, passphrase=?, environment=?, updated_at=NOW()
       WHERE location_id=?`,
-    [merchantId, body.merchant_name || null, body.store_id || null, merchantKey, body.passphrase || null, environment, locationId],
+    [merchantId, body.merchant_name || null, body.store_id || null, merchantKey, passphrase, environment, locationId],
   );
 
   const provisioned = await provisionPayfastProvider(locationId, environment === 'live' ? 'live' : 'test');
