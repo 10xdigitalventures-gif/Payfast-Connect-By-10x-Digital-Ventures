@@ -41,9 +41,9 @@ export async function GET(request: NextRequest) {
 
     const access = pick(data?.access_token, data?.accessToken, data?.data?.access_token);
     const refresh = pick(data?.refresh_token, data?.refreshToken, data?.data?.refresh_token);
+    // Do not trust locationId supplied by the callback URL.
     const locationId = pick(
       data?.locationId, data?.location_id, data?.data?.locationId,
-      request.nextUrl.searchParams.get('locationId'), request.nextUrl.searchParams.get('location_id'),
     );
     const companyId = pick(data?.companyId, data?.company_id, data?.data?.companyId);
     if (!access || !refresh || !locationId) throw new Error('Missing OAuth fields');
