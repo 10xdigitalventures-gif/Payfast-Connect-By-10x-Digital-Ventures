@@ -1,3 +1,4 @@
+import { checkGatewayOAuthCallback } from '@/lib/gateway-oauth-flow';
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { getAppUrlWithSearch } from '@/lib/app-url';
@@ -10,11 +11,21 @@ function pickString(...values: unknown[]) {
 }
 
 export async function GET(request: NextRequest) {
+  // Validate and atomically consume any controlled-install state BEFORE the
+  // authorization code is exchanged. Native Marketplace links can deliver
+  // code-only callbacks; these remain a separately documented fallback.
+  try {
+    const checked = await checkGatewayOAuthCallback(request, 'whop');
+    if (!checked.ok) {
+      return NextResponse.redirect(getAppUrlWithSearch('/install?provider=whop&error=invalid_oauth_state', request));
+    }
+  } catch (stateError) {
+    console.error('[whop OAuth] state validation failed', stateError);
+    return NextResponse.redirect(getAppUrlWithSearch('/install?provider=whop&error=state_validation_unavailable', request));
+  }
   const { searchParams } = new URL(request.url);
   const code = searchParams.get('code');
   const error = searchParams.get('error');
-  const locationIdFromQuery = searchParams.get('locationId') || searchParams.get('location_id');
-  const companyIdFromQuery = searchParams.get('companyId') || searchParams.get('company_id');
 
   if (error || !code) {
     return NextResponse.redirect(
@@ -37,7 +48,7 @@ export async function GET(request: NextRequest) {
     const redirectUri = `${appUrl}/oauth/whop/callback`;
     const tokenRes = await fetch('https://services.leadconnectorhq.com/oauth/token', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Version: 'v3' },
       body: new URLSearchParams({
         client_id: clientId,
         client_secret: clientSecret,
@@ -71,6 +82,7 @@ export async function GET(request: NextRequest) {
       tokens?.data?.refresh_token,
       tokens?.data?.refreshToken,
     );
+    // Only the verified OAuth token response may establish the installation location.
     const locationId = pickString(
       tokens?.locationId,
       tokens?.location_id,
@@ -78,7 +90,6 @@ export async function GET(request: NextRequest) {
       tokens?.data?.location_id,
       tokens?.user?.locationId,
       tokens?.user?.location_id,
-      locationIdFromQuery,
     );
     const companyId = pickString(
       tokens?.companyId,
@@ -87,7 +98,6 @@ export async function GET(request: NextRequest) {
       tokens?.data?.company_id,
       tokens?.user?.companyId,
       tokens?.user?.company_id,
-      companyIdFromQuery,
     );
     const expiresIn = Number(
       tokens?.expires_in ?? tokens?.expiresIn ?? tokens?.data?.expires_in ?? tokens?.data?.expiresIn ?? 3600,

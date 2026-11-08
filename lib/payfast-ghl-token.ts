@@ -27,7 +27,7 @@ export async function getValidPayfastToken(locationId: string): Promise<string |
   try {
     const response = await fetch(TOKEN_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Version: 'v3' },
       body: new URLSearchParams({
         client_id: config.clientId,
         client_secret: config.clientSecret,

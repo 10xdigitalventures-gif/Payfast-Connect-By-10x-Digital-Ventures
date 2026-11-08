@@ -1,34 +1,42 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { query } from '@/lib/db';
-import { applySessionCookie, InstallMode } from '@/lib/session';
+import { getSession } from '@/lib/session';
 import { getAppUrlWithSearch } from '@/lib/app-url';
 
+/**
+ * Existing installations are not authentication credentials.
+ * The legacy launch URL may only route an already authenticated user.
+ * Signed HighLevel SSO/launch verification must be implemented separately
+ * before supporting passwordless Marketplace launches.
+ */
 export async function GET(request: NextRequest) {
-  const mode = request.nextUrl.searchParams.get('mode') === 'agency' ? 'agency' : 'subaccount';
-  const locationId = request.nextUrl.searchParams.get('locationId') || request.nextUrl.searchParams.get('location_id');
-  const companyId = request.nextUrl.searchParams.get('companyId') || request.nextUrl.searchParams.get('company_id');
+  const requestedMode = request.nextUrl.searchParams.get('mode') === 'agency' ? 'agency' : 'subaccount';
+  const locationId = request.nextUrl.searchParams.get('locationId') ||
+    request.nextUrl.searchParams.get('location_id');
+  const companyId = request.nextUrl.searchParams.get('companyId') ||
+    request.nextUrl.searchParams.get('company_id');
 
-  if (!locationId && !companyId) {
-    return NextResponse.redirect(getAppUrlWithSearch(mode === 'agency' ? '/agency/install' : '/install', request));
+  const session = await getSession();
+  if (!session) {
+    const loginPath = requestedMode === 'agency' ? '/agency/login' : '/login';
+    return NextResponse.redirect(getAppUrlWithSearch(loginPath, request));
   }
 
-  const rows = await query<Array<{ location_id: string; company_id: string | null }>>(
-    `SELECT location_id, company_id
-     FROM installations
-     WHERE (? IS NOT NULL AND location_id = ?)
-        OR (? IS NOT NULL AND company_id = ?)
-     ORDER BY updated_at DESC, id DESC
-     LIMIT 1`,
-    [locationId, locationId, companyId, companyId]
-  );
-
-  if (!rows.length) {
-    return NextResponse.redirect(getAppUrlWithSearch(mode === 'agency' ? '/agency/install' : '/install', request));
+  const isAgency = session.role === 'agency' && session.installMode === 'agency';
+  const isSubaccount = session.role === 'user' && session.installMode === 'subaccount';
+  if ((requestedMode === 'agency' && !isAgency) ||
+      (requestedMode === 'subaccount' && !isSubaccount)) {
+    return NextResponse.json({ error: 'Unauthorized launch mode' }, { status: 403 });
   }
 
-  const install = rows[0];
-  const installMode: InstallMode = mode;
-  const destination = installMode === 'agency' ? '/agency?restored=1' : '/dashboard?restored=1';
+  // A companyId alone is insufficient proof of access to any location.
+  // Agency delegation requires a separate verified membership lookup.
+  if (companyId && !locationId) {
+    return NextResponse.json({ error: 'Location-specific authentication required' }, { status: 403 });
+  }
+  if (locationId && locationId !== session.locationId) {
+    return NextResponse.json({ error: 'Unauthorized location' }, { status: 403 });
+  }
 
-  return applySessionCookie(NextResponse.redirect(getAppUrlWithSearch(destination, request)), install.location_id, installMode);
+  const destination = requestedMode === 'agency' ? '/agency' : '/dashboard';
+  return NextResponse.redirect(getAppUrlWithSearch(destination, request));
 }

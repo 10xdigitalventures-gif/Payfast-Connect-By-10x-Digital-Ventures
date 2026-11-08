@@ -1,3 +1,4 @@
+import { checkGatewayOAuthCallback } from '@/lib/gateway-oauth-flow';
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { getAppUrlWithSearch } from '@/lib/app-url';
@@ -12,6 +13,18 @@ function pickString(...values: unknown[]) {
 }
 
 export async function GET(request: NextRequest) {
+  // Validate and atomically consume any controlled-install state BEFORE the
+  // authorization code is exchanged. Native Marketplace links can deliver
+  // code-only callbacks; these remain a separately documented fallback.
+  try {
+    const checked = await checkGatewayOAuthCallback(request, 'payfast');
+    if (!checked.ok) {
+      return NextResponse.redirect(getAppUrlWithSearch('/install?provider=payfast&error=invalid_oauth_state', request));
+    }
+  } catch (stateError) {
+    console.error('[payfast OAuth] state validation failed', stateError);
+    return NextResponse.redirect(getAppUrlWithSearch('/install?provider=payfast&error=state_validation_unavailable', request));
+  }
   const error = request.nextUrl.searchParams.get('error');
   const code = request.nextUrl.searchParams.get('code');
   if (error || !code) {
@@ -27,7 +40,7 @@ export async function GET(request: NextRequest) {
   try {
     const tokenResponse = await fetch('https://services.leadconnectorhq.com/oauth/token', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Version: 'v3' },
       body: new URLSearchParams({
         client_id: config.clientId,
         client_secret: config.clientSecret,
@@ -43,14 +56,13 @@ export async function GET(request: NextRequest) {
 
     const accessToken = pickString(tokens?.access_token, tokens?.accessToken, tokens?.data?.access_token, tokens?.data?.accessToken);
     const refreshToken = pickString(tokens?.refresh_token, tokens?.refreshToken, tokens?.data?.refresh_token, tokens?.data?.refreshToken);
+    // Only the verified OAuth token response may establish the installation location.
     const locationId = pickString(
       tokens?.locationId, tokens?.location_id, tokens?.data?.locationId, tokens?.data?.location_id,
       tokens?.user?.locationId, tokens?.user?.location_id,
-      request.nextUrl.searchParams.get('locationId'), request.nextUrl.searchParams.get('location_id'),
     );
     const companyId = pickString(
       tokens?.companyId, tokens?.company_id, tokens?.data?.companyId, tokens?.data?.company_id,
-      request.nextUrl.searchParams.get('companyId'), request.nextUrl.searchParams.get('company_id'),
     );
     if (!accessToken || !refreshToken || !locationId) throw new Error('OAuth response is missing token or location fields');
     const expiresAt = new Date(Date.now() + Math.max(60, Number(tokens?.expires_in || tokens?.expiresIn || 3600)) * 1000);

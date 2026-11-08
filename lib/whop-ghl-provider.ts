@@ -3,7 +3,7 @@ import { query } from './db';
 import { getValidWhopGhlToken } from './whop-ghl-token';
 
 const GHL_API='https://services.leadconnectorhq.com';
-const VERSION='2021-07-28';
+const VERSION = 'v3';
 function appUrl(path:string){return `${(process.env.NEXT_PUBLIC_APP_URL||'').replace(/\/$/,'')}${path}`;}
 async function request(path:string,token:string,method:'POST'|'PUT',body:unknown){
   const response=await fetch(`${GHL_API}${path}`,{method,headers:{Authorization:`Bearer ${token}`,Version:VERSION,'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -20,7 +20,7 @@ export async function provisionWhopProvider(locationId:string){
   const token=await getValidWhopGhlToken(locationId); if(!token)return {ok:false,reason:'missing_whop_app_token' as const};
   try{
     const provider=await request(`/payments/custom-provider/provider?${new URLSearchParams({locationId})}`,token,'POST',{
-      name:'10x Whop App',description:'Dedicated Whop payment and subscription provider',locationId,
+      name:'10x Whop App',description:'Dedicated Whop payment and subscription provider',
       paymentsUrl:appUrl('/apps/whop/checkout'),queryUrl:`${appUrl('/api/apps/whop/query')}?locationId=${encodeURIComponent(locationId)}`,
       imageUrl:process.env.WHOP_GHL_PROVIDER_LOGO_URL||appUrl('/logo.png'),supportsSubscriptionSchedule:true});
     const providerKeys=await keys(locationId); const config={apiKey:providerKeys.apiKey,publishableKey:providerKeys.publishableKey};

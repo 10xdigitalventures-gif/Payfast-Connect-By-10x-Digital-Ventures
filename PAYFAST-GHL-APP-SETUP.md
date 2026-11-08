@@ -35,3 +35,12 @@ Set `PAYFAST_GHL_CLIENT_ID`, `PAYFAST_GHL_CLIENT_SECRET`, `PAYFAST_GHL_SHARED_SE
 5. Save sandbox credentials in the PayFast-only settings page.
 6. Complete sandbox success, decline, cancellation, duplicate callback, and GHL receipt tests.
 7. Repeat with a limited live payment before migrating all locations.
+
+
+## Marketplace custom page authentication (security branch)
+- Configure custom page URL as `https://payfast.10xdigitalventures.com/apps/payfast/settings?locationId={{location.id}}`.
+- Configure `PAYFAST_GHL_SHARED_SECRET` with the **PayFast app's own** HighLevel Advanced Settings → Auth → Shared Secret. Do not reuse other apps' secrets.
+- Configure `SESSION_SECRET` (32+ random characters) and `NEXT_PUBLIC_APP_URL=https://payfast.10xdigitalventures.com`.
+- In HighLevel's iframe, the page requests `REQUEST_USER_DATA`, forwards encrypted `REQUEST_USER_DATA_RESPONSE.payload` to `/api/marketplace/session`; the backend decrypts it, requires HighLevel admin role, checks installed app/location, and issues a 15-minute PayFast/location-scoped bearer token. This avoids third-party session cookies.
+- API v3: standalone OAuth and custom-provider API calls now use `Version: v3`.
+- **Not yet production-approved:** GHL iframe SSO, browser origin handling, sandbox installation, legacy compatibility, amount checks and CI must pass.

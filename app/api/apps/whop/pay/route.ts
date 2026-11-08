@@ -1,13 +1,60 @@
+import { withWhopCheckoutLock } from '@/lib/whop-checkout-lock';
+import { attestWhopGhlOrder } from '@/lib/ghl-whop-order-attestation';
+import { timingSafeEqual } from 'node:crypto';
 import {NextRequest,NextResponse} from 'next/server';
 import {query} from '@/lib/db';
 import {generateToken} from '@/lib/tokens';
 import {convertPkrToUsd,calculateFeePkr,createWhopCheckout,resolveExchangeRate,billingPeriodDaysForFrequency} from '@/lib/whop';
-export async function POST(request:NextRequest){const body=await request.json();const{locationId,contactId,ghlTransactionId,invoiceId,orderId,subscriptionId,amount,description,nameFirst,nameLast,email}=body;if(!locationId||!amount||!email)return NextResponse.json({error:'locationId, amount, email required'},{status:400});
+export async function POST(request:NextRequest){const body=await request.json();const{locationId,contactId,ghlTransactionId,invoiceId,orderId,subscriptionId,amount,description,nameFirst,nameLast,email}=body;if(!locationId||!email||!Number.isFinite(Number(amount))||Number(amount)<=0)return NextResponse.json({error:'Valid location, amount and email required'},{status:400});
  const rows=await query<any[]>('SELECT * FROM whop_ghl_installations WHERE location_id=? LIMIT 1',[locationId]);const inst=rows[0];if(!inst?.whop_api_key||!inst?.whop_company_id)return NextResponse.json({error:'Whop is not configured in the standalone Whop app.'},{status:400});
- const total=Number(amount);const fee=Number(inst.whop_fee_percent??10);const currency=String(body.currency||inst.whop_currency||'PKR').toUpperCase();let rate=1;let rateSource:'fixed'|'live'='fixed';let usdAmount:number;
+ const expectedKey=String(inst.provider_publishable_key||'');
+ const suppliedKey=String(body.publishableKey||'');
+ if(!expectedKey||!/^[A-Za-z0-9_-]{1,255}$/.test(suppliedKey)||expectedKey.length!==suppliedKey.length||
+    !timingSafeEqual(Buffer.from(expectedKey),Buffer.from(suppliedKey))){
+   return NextResponse.json({error:'Invalid Whop provider context'},{status:403});
+ }
+ if(!['PKR','USD'].includes(String(body.currency||inst.whop_currency||'PKR').toUpperCase())){
+   return NextResponse.json({error:'Unsupported Whop payment currency'},{status:400});
+ }
+ const total=Number(amount);const fee=Number(inst.whop_fee_percent??10);const currency=String(body.currency||inst.whop_currency||'PKR').toUpperCase();
+ const attestation = await attestWhopGhlOrder({
+   locationId: String(locationId),
+   orderId: String(orderId || ''),
+   amount: total,
+   currency,
+   contactId: String(contactId || ''),
+ });
+ if (!attestation.ok) return NextResponse.json({ error: attestation.error }, { status: attestation.status });
+ // The order was attested; now serialize every side effect for the same
+ // location/order so double-clicks or concurrent retries cannot create two
+ // Whop-hosted payment sessions.
+ try {
+ return await withWhopCheckoutLock(String(locationId), String(orderId), async () => {
+   const existing = await query<any[]>(
+     `SELECT id,status FROM payments
+       WHERE location_id=? AND provider='whop'
+         AND JSON_UNQUOTE(JSON_EXTRACT(
+           IF(JSON_VALID(item_description),item_description,'{}'), '$.orderId'
+         ))=?
+       ORDER BY id DESC LIMIT 1`,
+     [String(locationId),String(orderId)],
+   );
+   if (existing.length) {
+     return NextResponse.json(
+       { error: 'A Whop checkout has already been initiated for this HighLevel order. Check the existing transaction before retrying.' },
+       { status: 409 },
+     );
+   }
+   let rate=1;let rateSource:'fixed'|'live'='fixed';let usdAmount:number;
  if(currency==='USD')usdAmount=convertPkrToUsd(total,fee,1);else{const resolved=await resolveExchangeRate(inst.whop_rate_mode,Number(inst.whop_exchange_rate||280));rate=resolved.rate;rateSource=resolved.source;usdAmount=convertPkrToUsd(total,fee,rate);}
  const recurring=!!subscriptionId||body.isRecurring===true||body.mode==='subscription';const interval=Math.max(1,Number(body.intervalCount||1));const days=recurring?billingPeriodDaysForFrequency(body.frequency||body.interval)*interval:null;const basketId=`WHOP-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;const payToken=generateToken(16);
  await query(`INSERT INTO payments(location_id,contact_id,payer_email,payer_first,payer_last,amount,item_name,item_description,payment_type,provider,status,pf_token,custom_str1,custom_str2,custom_str3) VALUES(?,?,?,?,?,?,?,?,?,'whop','pending',?,?,?,?)`,[locationId,contactId||null,email,nameFirst||'',nameLast||'.',total,description||'CRM Payment',JSON.stringify({invoiceId:invoiceId||null,orderId:orderId||null,contactId:contactId||null,subscriptionId:subscriptionId||null,usdAmount,rate,rateSource,feePkr:calculateFeePkr(total,fee),feePercent:fee,productCurrency:currency,billingPeriodDays:days}),recurring?'subscription':'one-time',basketId,payToken,locationId,ghlTransactionId||null]);
  const appUrl=String(process.env.NEXT_PUBLIC_APP_URL||'').replace(/\/$/,'');const result=await createWhopCheckout({config:{apiKey:inst.whop_api_key,companyId:inst.whop_company_id,exchangeRate:rate,feePercent:fee},usdAmount,planType:recurring?'renewal':'one_time',billingPeriodDays:days,redirectUrl:`${appUrl}/checkout/success?location_id=${encodeURIComponent(locationId)}&basket_id=${encodeURIComponent(basketId)}`,metadata:{app:'whop',basketId,location_id:locationId,ghl_transaction_id:ghlTransactionId||'',ghl_subscription_id:subscriptionId||'',contact_id:contactId||'',customer_email:email}});
  if(!result.ok||!result.checkoutUrl){await query(`UPDATE payments SET status='failed',raw_itn=? WHERE pf_token=? AND location_id=?`,[JSON.stringify(result),basketId,locationId]);return NextResponse.json({error:result.error||'Could not create Whop checkout.'},{status:502});}
- await query('UPDATE payments SET whop_checkout_id=?,whop_plan_id=? WHERE pf_token=? AND location_id=?',[result.checkoutId||null,result.planId||null,basketId,locationId]);return NextResponse.json({provider:'whop',redirectUrl:result.checkoutUrl,payToken,basketId,usdAmount});}
+ await query('UPDATE payments SET whop_checkout_id=?,whop_plan_id=? WHERE pf_token=? AND location_id=?',[result.checkoutId||null,result.planId||null,basketId,locationId]);return NextResponse.json({provider:'whop',redirectUrl:result.checkoutUrl,payToken,basketId,usdAmount});
+ });
+ } catch (error) {
+   console.error('[Whop App] checkout serialization failed', error);
+   return NextResponse.json({ error: 'Unable to safely initiate checkout; please try again later.' }, { status: 503 });
+ }
+}

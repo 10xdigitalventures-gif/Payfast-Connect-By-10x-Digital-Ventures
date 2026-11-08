@@ -1,3 +1,4 @@
+import { checkGatewayOAuthCallback } from '@/lib/gateway-oauth-flow';
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { getAppUrlWithSearch } from '@/lib/app-url';
@@ -9,6 +10,18 @@ function pick(...values: unknown[]) {
 }
 
 export async function GET(request: NextRequest) {
+  // Validate and atomically consume any controlled-install state BEFORE the
+  // authorization code is exchanged. Native Marketplace links can deliver
+  // code-only callbacks; these remain a separately documented fallback.
+  try {
+    const checked = await checkGatewayOAuthCallback(request, 'swich');
+    if (!checked.ok) {
+      return NextResponse.redirect(getAppUrlWithSearch('/install?provider=swich&error=invalid_oauth_state', request));
+    }
+  } catch (stateError) {
+    console.error('[swich OAuth] state validation failed', stateError);
+    return NextResponse.redirect(getAppUrlWithSearch('/install?provider=swich&error=state_validation_unavailable', request));
+  }
   const code = request.nextUrl.searchParams.get('code');
   const error = request.nextUrl.searchParams.get('error');
   if (error || !code) {
@@ -25,7 +38,7 @@ export async function GET(request: NextRequest) {
   try {
     const response = await fetch('https://services.leadconnectorhq.com/oauth/token', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Version: 'v3' },
       body: new URLSearchParams({
         client_id: config.clientId,
         client_secret: config.clientSecret,
@@ -41,9 +54,9 @@ export async function GET(request: NextRequest) {
 
     const access = pick(data?.access_token, data?.accessToken, data?.data?.access_token);
     const refresh = pick(data?.refresh_token, data?.refreshToken, data?.data?.refresh_token);
+    // Do not trust locationId supplied by the callback URL.
     const locationId = pick(
       data?.locationId, data?.location_id, data?.data?.locationId,
-      request.nextUrl.searchParams.get('locationId'), request.nextUrl.searchParams.get('location_id'),
     );
     const companyId = pick(data?.companyId, data?.company_id, data?.data?.companyId);
     if (!access || !refresh || !locationId) throw new Error('Missing OAuth fields');

@@ -1,3 +1,4 @@
+import { getPaymentPopupTargetOrigin } from '@/lib/payment-popup-origin';
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { extractCapturedInstrument, verifySignature } from '@/lib/payfast';
@@ -11,8 +12,9 @@ function value(record: Record<string, string>, ...keys: string[]) {
 function changed(result: unknown) { return Number((result as { affectedRows?: number } | null)?.affectedRows || 0) === 1; }
 function popup(status: 'complete' | 'failed' | 'cancelled') {
   const message = JSON.stringify({ type: 'payfast_popup_result', status });
+  const targetOrigin = getPaymentPopupTargetOrigin();
   const title = status === 'complete' ? 'Payment complete' : status === 'cancelled' ? 'Payment cancelled' : 'Payment not completed';
-  return new NextResponse(`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head><body style="font-family:Arial;text-align:center;padding:48px"><h2>${title}</h2><p>This window will close automatically.</p><button onclick="window.close()">Close</button><script>try{if(window.opener)window.opener.postMessage(${JSON.stringify(message)},'*')}catch(e){}setTimeout(function(){window.close()},1500)</script></body></html>`,
+  return new NextResponse(`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head><body style="font-family:Arial;text-align:center;padding:48px"><h2>${title}</h2><p>This window will close automatically.</p><button onclick="window.close()">Close</button><script>try{if(window.opener && ${JSON.stringify(targetOrigin)})window.opener.postMessage(${JSON.stringify(message)},${JSON.stringify(targetOrigin)})}catch(e){}setTimeout(function(){window.close()},1500)</script></body></html>`,
     { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
 }
 
