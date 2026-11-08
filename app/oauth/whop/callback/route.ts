@@ -1,3 +1,4 @@
+import { checkGatewayOAuthCallback } from '@/lib/gateway-oauth-flow';
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { getAppUrlWithSearch } from '@/lib/app-url';
@@ -10,6 +11,18 @@ function pickString(...values: unknown[]) {
 }
 
 export async function GET(request: NextRequest) {
+  // Validate and atomically consume any controlled-install state BEFORE the
+  // authorization code is exchanged. Native Marketplace links can deliver
+  // code-only callbacks; these remain a separately documented fallback.
+  try {
+    const checked = await checkGatewayOAuthCallback(request, 'whop');
+    if (!checked.ok) {
+      return NextResponse.redirect(getAppUrlWithSearch('/install?provider=whop&error=invalid_oauth_state', request));
+    }
+  } catch (stateError) {
+    console.error('[whop OAuth] state validation failed', stateError);
+    return NextResponse.redirect(getAppUrlWithSearch('/install?provider=whop&error=state_validation_unavailable', request));
+  }
   const { searchParams } = new URL(request.url);
   const code = searchParams.get('code');
   const error = searchParams.get('error');
