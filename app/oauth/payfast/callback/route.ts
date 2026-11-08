@@ -1,3 +1,4 @@
+import { checkGatewayOAuthCallback } from '@/lib/gateway-oauth-flow';
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { getAppUrlWithSearch } from '@/lib/app-url';
@@ -12,6 +13,18 @@ function pickString(...values: unknown[]) {
 }
 
 export async function GET(request: NextRequest) {
+  // Validate and atomically consume any controlled-install state BEFORE the
+  // authorization code is exchanged. Native Marketplace links can deliver
+  // code-only callbacks; these remain a separately documented fallback.
+  try {
+    const checked = await checkGatewayOAuthCallback(request, 'payfast');
+    if (!checked.ok) {
+      return NextResponse.redirect(getAppUrlWithSearch('/install?provider=payfast&error=invalid_oauth_state', request));
+    }
+  } catch (stateError) {
+    console.error('[payfast OAuth] state validation failed', stateError);
+    return NextResponse.redirect(getAppUrlWithSearch('/install?provider=payfast&error=state_validation_unavailable', request));
+  }
   const error = request.nextUrl.searchParams.get('error');
   const code = request.nextUrl.searchParams.get('code');
   if (error || !code) {
