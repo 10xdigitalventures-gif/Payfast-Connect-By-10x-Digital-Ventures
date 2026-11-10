@@ -80,6 +80,8 @@ jobs:
             ADD COLUMN whop_rate_mode VARCHAR(20) DEFAULT 'fixed', ADD COLUMN whop_currency VARCHAR(10) DEFAULT 'PKR';
           ALTER TABLE billing_invoices ADD COLUMN provider VARCHAR(20) NOT NULL DEFAULT 'payfast' AFTER payment_id;
           SQL
+      - name: Verify gateway OAuth nonce migration and one-time replay on MySQL 8
+        run: bash scripts/verify-gateway-oauth-migration.sh
       - name: Verify idempotent Whop migrations on MySQL 8
         run: bash scripts/verify-whop-migrations.sh
       - run: npm test -- --runInBand
